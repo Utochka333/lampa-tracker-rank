@@ -1,11 +1,11 @@
-/* Lampa Tracker Rank v1.3.0 — combined tracker allowlist, scoring, colouring.
+/* Lampa Tracker Rank v1.3.1 — combined tracker allowlist, scoring, colouring.
  * Works on rendered torrent items from public parsers; no parser requests modified.
  * Local-only UI logic. Disable competing Torrent Styles v2 before installing.
  */
 (function () {
   'use strict';
   if (window.LampaTrackerRank) {
-    if (window.LampaTrackerRank.version === '1.3.0') return;
+    if (window.LampaTrackerRank.version === '1.3.1') return;
     try { if (window.LampaTrackerRank.disable) window.LampaTrackerRank.disable(); } catch(e) {}
   }
 
@@ -253,17 +253,32 @@
         border-radius:.45em;padding:.22em .48em;color:var(--ltr-ink,#65d594);
         font-weight:700;font-size:.83em;pointer-events:none;white-space:nowrap}
       .ltr-score::before{content:"★ ";opacity:.8}
-      .ltr-metric{border:1px solid currentColor!important;border-radius:4px!important;
-        padding:0 .28em!important;font-weight:700!important;background:rgba(0,0,0,.23)!important;
-        box-shadow:none!important;display:inline-block!important;white-space:nowrap!important}
+      /* One clean outline per metric, with no second chip around inner values. */
+      .ltr-metric,.ltr-size{
+        border:1px solid currentColor!important;border-radius:4px!important;
+        padding:.10em .38em!important;font-weight:700!important;
+        box-shadow:none!important;white-space:nowrap!important;
+        width:max-content!important;max-width:max-content!important;min-width:0!important;
+        flex:0 0 auto!important;align-self:center!important;
+        box-sizing:border-box!important;line-height:1.15!important;
+        display:inline-flex!important;align-items:center!important;gap:.18em!important;
+      }
+      .ltr-metric{background:rgba(0,0,0,.23)!important}
+      .ltr-size{background:rgba(0,0,0,.23)!important}
+      /* Lampa wraps the numeric value in a separate chip. Unwrap visually. */
+      .ltr-card .ltr-metric *, .ltr-card .ltr-size *{
+        background:transparent!important;background-color:transparent!important;
+        border:0!important;outline:0!important;box-shadow:none!important;
+        border-radius:0!important;padding:0!important;margin:0!important;
+        color:inherit!important;line-height:inherit!important;
+        min-width:0!important;max-width:none!important;
+      }
       .ltr-green{color:#40dc83!important;background:rgba(13,82,43,.35)!important}
       .ltr-yellow{color:#e9c451!important;background:rgba(93,73,12,.34)!important}
       .ltr-amber{color:#edab3e!important;background:rgba(111,71,11,.40)!important}
       .ltr-orange{color:#f5a854!important;background:rgba(101,52,9,.34)!important}
       .ltr-red{color:#ef7777!important;background:rgba(104,23,23,.33)!important}
       .ltr-blue{color:#66b6ff!important;background:rgba(20,58,105,.35)!important}
-      .ltr-size{border:1px solid currentColor!important;border-radius:4px!important;
-        padding:0 .28em!important;font-weight:700!important;box-shadow:none!important}
       .ltr-size.ltr-green{color:#5adb9c!important;background:rgba(16,70,47,.45)!important}
       .ltr-size.ltr-yellow{color:#e9c451!important;background:rgba(93,73,12,.38)!important}
       .ltr-size.ltr-amber{color:#edab3e!important;background:rgba(111,71,11,.43)!important}
@@ -276,6 +291,7 @@
     if(!el||el.classList.contains(BADGE))return;
     var names=['ltr-green','ltr-yellow','ltr-amber','ltr-orange','ltr-red','ltr-blue'];
     if(type==='size'){
+      el.classList.remove('ltr-metric');
       el.classList.add('ltr-size');
       names.forEach(function(c){el.classList.toggle(c,c===color);});
       return;
@@ -472,7 +488,7 @@
   observed.observe(document.documentElement,{childList:true,subtree:true,characterData:true});
   schedule();
   window.LampaTrackerRank={
-    version:'1.3.0',
+    version:'1.3.1',
     config:CONFIG,options:OPTIONS,profiles:PROFILES,
     refresh:scan,
     setOption:function(key,value){if(key==='profile'&& !PROFILES[value])return;
@@ -493,5 +509,5 @@
       var st=document.getElementById(STYLE_ID);if(st)st.remove();
     }
   };
-  console.info('[Lampa Tracker Rank v1.3.0] All six features loaded.');
+  console.info('[Lampa Tracker Rank v1.3.1] All six features loaded.');
 })();
