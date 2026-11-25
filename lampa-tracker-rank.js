@@ -1,10 +1,13 @@
-/* Lampa Tracker Rank v1.0.0 — combined tracker allowlist, scoring, colouring.
+/* Lampa Tracker Rank v1.3.0 — combined tracker allowlist, scoring, colouring.
  * Works on rendered torrent items from public parsers; no parser requests modified.
  * Local-only UI logic. Disable competing Torrent Styles v2 before installing.
  */
 (function () {
   'use strict';
-  if (window.LampaTrackerRank && window.LampaTrackerRank.version === '1.0.0') return;
+  if (window.LampaTrackerRank) {
+    if (window.LampaTrackerRank.version === '1.3.0') return;
+    try { if (window.LampaTrackerRank.disable) window.LampaTrackerRank.disable(); } catch(e) {}
+  }
 
   var CONFIG = {
     allowed: [
@@ -18,8 +21,37 @@
     sortByScore: true,
     // Avoid modifying results elsewhere in the Lampa UI.
     cardSelector: '.torrent-item',
-    scoreWeights: {quality:30, hdr:15, seeds:25, size:15, tracker:15}
+    scoreWeights: {quality:30, hdr:10, audio:25, release:10, seeds:20, size:5, tracker:0}
   };
+  // The Balanced profile preserves the exact weights requested by the user.
+  var PROFILES = {
+    balanced:{quality:30,hdr:10,audio:25,release:10,seeds:20,size:5,tracker:0},
+    cinema:{quality:35,hdr:15,audio:25,release:15,seeds:5,size:5,tracker:0},
+    quick:{quality:20,hdr:5,audio:25,release:5,seeds:40,size:5,tracker:0},
+    economy:{quality:20,hdr:0,audio:25,release:5,seeds:25,size:25,tracker:0}
+  };
+  var STORAGE='lampa_tracker_rank_v13_';
+  function load(key,fallback){
+    try{if(window.Lampa&&Lampa.Storage&&Lampa.Storage.get){var x=Lampa.Storage.get(STORAGE+key);if(x!==undefined&&x!==null)return x;}}
+    catch(e){}
+    try{var raw=window.localStorage.getItem(STORAGE+key);return raw===null?fallback:JSON.parse(raw);}catch(e){return fallback;}
+  }
+  function save(key,value){
+    try{if(window.Lampa&&Lampa.Storage&&Lampa.Storage.set)Lampa.Storage.set(STORAGE+key,value);}
+    catch(e){}
+    try{window.localStorage.setItem(STORAGE+key,JSON.stringify(value));}catch(e){}
+  }
+  var OPTIONS={
+    profile:String(load('profile','balanced')),
+    filter:load('filter',true)!==false,
+    sorting:load('sorting',true)!==false,
+    grouping:load('grouping',false)===true,
+    showReadiness:load('readiness',true)!==false,
+    showDetails:load('details',true)!==false,
+    allowed:{}
+  };
+  CONFIG.allowed.forEach(function(t){OPTIONS.allowed[t.name]=load('tracker_'+t.name,true)!==false;});
+  if(!PROFILES[OPTIONS.profile])OPTIONS.profile='balanced';
   var STYLE_ID='lampa-tracker-rank-css';
   var HIDE='ltr-hidden';
   var CARD='ltr-card';
@@ -33,6 +65,7 @@
   ];
   var observed=null, pending=false, internalMutation=false, disabled=false;
   var originalOrder=new WeakMap();
+  var reorderLock=false;
   var generated = new WeakMap();
   var MAX_CARDS=400;
 
@@ -89,154 +122,333 @@
     var m=t.match(regex);
     return m?num(m[1]):null;
   }
+  // Rendered Lampa cards vary across builds; prefer full card text rather than
+  // one guessed selector which might contain bitrate instead of seeds/size.
+  function metricText(card){
+    return n(card.innerText || card.textContent || '');
+  }
   function seedsOf(card){
     var ds=card.dataset||{};
     if(ds.seeders!=null)return num(ds.seeders);
-    return getMetric(card,[
-      '.torrent-item__seeds','.torrent-item__seed',
-      '.torrent-item__seeders','.torrent-item__peers-seeds',
-      '[data-seeds]'
-    ],/(?:Раздают|Сиды|Seeds|Seeders)\s*:?\s*(\d[\d\s]*)/i);
+    var t=metricText(card),m=t.match(/(?:Раздают|Разда[её]т|Seeders|Seeds|Сиды)\s*:?\s*(\d[\d\s]*)/i);
+    return m?num(m[1]):null;
   }
   function peersOf(card){
-    return getMetric(card,[
-      '.torrent-item__leechers','.torrent-item__leech',
-      '.torrent-item__peers'
-    ],/(?:Качают|Пиры|Leechers|Leechs)\s*:?\s*(\d[\d\s]*)/i);
+    var t=metricText(card),m=t.match(/(?:Качают|Leechers|Peers|Пиры)\s*:?\s*(\d[\d\s]*)/i);
+    return m?num(m[1]):null;
+  }
+  function bitrateOf(card){
+    var t=metricText(card);
+    var m=t.match(/(?:Битрейт|Bitrate)\s*:?\s*(\d+(?:[.,]\d+)?)\s*(?:Мбит\/с|Mbps|Mb\/s)/i);
+    return m?num(m[1]):null;
   }
   function sizeOf(card){
     var ds=card.dataset||{};
     if(ds.sizeBytes)return num(ds.sizeBytes)/1073741824;
-    var source=firstText(card,[
-      '.torrent-item__size','.torrent-item__weight',
-      '.torrent-item__details','.torrent-item__footer'
-    ]) || textOf(card);
-    var m=source.match(/(\d+(?:[.,]\d+)?)\s*(ТиБ|TiB|ТБ|TB|ГиБ|GiB|ГБ|GB|МиБ|MiB|МБ|MB)\b/i);
-    if(!m)return null;
-    var v=num(m[1]),unit=m[2].toLowerCase();
+    var t=metricText(card);
+    var values=[...t.matchAll(/(\d+(?:[.,]\d+)?)\s*(ТиБ|TiB|ТБ|TB|ГиБ|GiB|ГБ|GB|МиБ|MiB|МБ|MB)(?![A-Za-zА-Яа-я])/gi)];
+    if(!values.length)return null;
+    var m=values[values.length-1],v=num(m[1]),unit=m[2].toLowerCase();
     if(/^(?:т|t)/.test(unit))return v*1024;
     if(/^(?:м|m)/.test(unit))return v/1024;
     return v;
   }
   function qualityOf(title,card){
     var t=title+' '+firstText(card,['.torrent-item__quality','.torrent-item__tags']);
-    if(/(?:2160p|3840\s*[xх×]\s*2160|\b4k\b|\buhd\b)/i.test(t))return {name:'4K',score:30};
-    if(/(?:1080p|1920\s*[xх×]\s*(?:8\d\d|9\d\d|10\d\d)|\bfhd\b)/i.test(t))return {name:'1080p',score:23};
-    if(/(?:720p|1280\s*[xх×]\s*720|\bhd\b)/i.test(t))return {name:'720p',score:14};
-    if(/(?:480p|576p|\bsd\b|720\s*[xх×]\s*(?:304|400|480|576|534|576))/i.test(t))return {name:'SD',score:5};
-    return {name:'Неизвестно',score:0};
+    if(/(?:2160p|3840\s*[xх×]\s*\d{3,4}|\b4k\b|\buhd\b)/i.test(t))return {name:'4K',raw:30};
+    if(/(?:1080p|1920\s*[xх×]\s*\d{3,4}|\bfhd\b)/i.test(t))return {name:'1080p',raw:26};
+    if(/(?:720p|1280\s*[xх×]\s*\d{3,4}|\bhd\b)/i.test(t))return {name:'720p',raw:19};
+    if(/(?:480p|576p|\bsd\b|720\s*[xх×]\s*\d{3,4})/i.test(t))return {name:'SD',raw:10};
+    return {name:'Неизвестно',raw:14};
   }
   function hdrOf(title,card){
     var t=title+' '+firstText(card,['.torrent-item__quality','.torrent-item__tags']);
-    if(/(?:dolby\s*vision|\bDoVi\b|\bDV\b|\bHDR10\+?\b)/i.test(t))return {name:'DV/HDR10',score:15};
-    if(/\bHDR\b/i.test(t))return {name:'HDR',score:12};
-    return {name:'SDR/неизв.',score:0};
+    if(/(?:dolby\s*vision|\bDoVi\b|\bDV\b|\bP8\b|HDR10\+)/i.test(t))return {name:'DV/HDR10+',raw:10};
+    if(/\bHDR(?:10)?\b/i.test(t))return {name:'HDR',raw:8};
+    return {name:'SDR/неизвестно',raw:0};
+  }
+  function audioOf(title,card){
+    var t=(title+' '+firstText(card,['.torrent-item__ffprobe','.torrent-item__tags','.torrent-item__audio'])).replace(/\s+/g,' ');
+    if(/(?:RUS\s*[-–:]\s*Дубляж|\bДубляж\b|\bДБ\b|\bDUB\b|\bDubbing\b|\bДублированн)/i.test(t))return {name:'Русский дубляж',raw:25,certainty:'явно'};
+    if(/(?:RUS\s*[-–:]|\bRUS\b|\bРусск(?:ий|ая|ое)\b)/i.test(t)) {
+      if(/(?:MVO|\bПМ\b|многоголос|профессиональн|LostFilm|HDRezka|TVShows)/i.test(t))return {name:'Русская многоголосая',raw:22,certainty:'вероятно'};
+      return {name:'Русская дорожка',raw:21,certainty:'явно'};
+    }
+    if(/(?:\bMVO\b|\bПМ\b|многоголос|профессиональн|\bAVO\b|одноголос)/i.test(t))return {name:'Озвучка (язык не указан)',raw:15,certainty:'неизвестно'};
+    if(/(?:\bUKR\b|украинск|\bENG\b|original\s*eng|английск)/i.test(t))return {name:'Русская не подтверждена',raw:2,certainty:'нет подтверждения'};
+    return {name:'Язык неизвестен',raw:12,certainty:'неизвестно'};
+  }
+  function releaseOf(title){
+    if(/\b(?:REMUX|BDREMUX)\b/i.test(title))return {name:'REMUX',raw:10};
+    if(/(?:Blu[ -]?ray|BDRip|BD50|BD25)/i.test(title))return {name:'Blu-ray/BDRip',raw:9};
+    if(/\bWEB[ .-]?DL\b/i.test(title))return {name:'WEB-DL',raw:8};
+    if(/\bWEBRip\b/i.test(title))return {name:'WEBRip',raw:6};
+    if(/\b(?:HDTV|HDTVRip|DVDRip)\b/i.test(title))return {name:'TV/DVD',raw:4};
+    if(/(?:Telecine|TSRip|TeleSync|\bTC\b|\bCAM\b|\bTS\b)/i.test(title))return {name:'TS/CAM',raw:1};
+    return {name:'Неизвестно',raw:5};
+  }
+  function codecOf(title){
+    if(/\bAV1\b/i.test(title))return 'AV1';
+    if(/(?:\bHEVC\b|\bH[ .-]?265\b|\bx265\b)/i.test(title))return 'HEVC';
+    if(/(?:\bH[ .-]?264\b|\bx264\b|\bAVC\b)/i.test(title))return 'H264';
+    return 'неизвестно';
   }
   function sizePoints(gb,q){
-    if(gb==null||!isFinite(gb)||gb<=0)return 0;
-    var range=q.name==='4K'?[8,35]:q.name==='1080p'?[2,15]:q.name==='720p'?[0.7,8]:[0.3,5];
-    if(gb>=range[0]&&gb<=range[1])return 15;
-    if(gb<range[0])return Math.round(Math.max(0,15*gb/range[0]));
-    return Math.max(1,Math.round(15*range[1]/gb));
+    if(gb==null||!isFinite(gb)||gb<=0)return 3;
+    var range=q.name==='4K'?[8,55]:q.name==='1080p'?[2,22]:q.name==='720p'?[0.7,9]:[0.3,6];
+    if(OPTIONS.profile==='economy'){
+      if(gb<=range[0])return 5;
+      if(gb<=range[1])return Math.max(2,Math.round(5-(gb-range[0])/(range[1]-range[0])*3));
+      return 1;
+    }
+    if(gb>=range[0]&&gb<=range[1])return 5;
+    if(gb<range[0])return Math.max(1,Math.round(5*gb/range[0]));
+    return Math.max(2,Math.round(5*range[1]/gb));
+  }
+  function seedPoints(seeds){
+    if(seeds==null)return 8;
+    if(seeds<1)return 0;
+    if(seeds<5)return 3;
+    if(seeds<10)return 7;
+    if(seeds<25)return 12;
+    if(seeds<75)return 15;
+    if(seeds<200)return 18;
+    return 20;
+  }
+  function readiness(seeds,bitrate){
+    if(seeds===null||seeds===undefined)return {label:'скорость не проверена',level:'unknown'};
+    if(seeds<5)return {label:'мало сидов',level:'bad'};
+    if(seeds<10)return {label:'сидов немного',level:'warn'};
+    if(bitrate!==null&&bitrate>=100&&seeds<40)return {label:'высокий битрейт',level:'warn'};
+    return {label:'сидов достаточно',level:'good'};
   }
   function score(card){
     var source=sourceString(card);
     var matched=CONFIG.allowed.filter(function(t){return t.rx.test(source);});
     var title=titleOf(card),quality=qualityOf(title,card),hdr=hdrOf(title,card);
-    var seeds=seedsOf(card),peers=peersOf(card),size=sizeOf(card);
-    var seedPoints=seeds==null?0:Math.min(25,Math.round(25*Math.log(1+Math.max(0,seeds))/Math.log(1001)));
-    var trackerPoints=matched.length?Math.max.apply(null,matched.map(function(t){return t.rank;})):0;
-    var sizeScore=sizePoints(size,quality);
-    return {
-      total:quality.score+hdr.score+seedPoints+sizeScore+trackerPoints,
-      source:source,matched:matched.map(function(t){return t.name;}),
-      quality:quality,hdr:hdr,seeds:seeds,peers:peers,size:size,
-      subscores:{quality:quality.score,hdr:hdr.score,seeds:seedPoints,size:sizeScore,tracker:trackerPoints}
-    };
+    var audio=audioOf(title,card),release=releaseOf(title),codec=codecOf(title);
+    var seeds=seedsOf(card),peers=peersOf(card),size=sizeOf(card),bitrate=bitrateOf(card);
+    var w=PROFILES[OPTIONS.profile]||PROFILES.balanced;
+    var raw={quality:quality.raw,hdr:hdr.raw,audio:audio.raw,release:release.raw,seeds:seedPoints(seeds),size:sizePoints(size,quality),tracker:0};
+    var sub={};Object.keys(w).forEach(function(k){var max={quality:30,hdr:10,audio:25,release:10,seeds:20,size:5,tracker:1}[k];sub[k]=Math.round(raw[k]*w[k]/max);});
+    var total=Math.max(0,Math.min(100,Object.keys(sub).reduce(function(a,k){return a+sub[k];},0)));
+    return {total:total,source:source,matched:matched.map(function(t){return t.name;}),
+      title:title,quality:quality,hdr:hdr,audio:audio,release:release,codec:codec,seeds:seeds,peers:peers,
+      size:size,bitrate:bitrate,readiness:readiness(seeds,bitrate),subscores:sub,weights:w};
   }
   function style(){
     if(document.getElementById(STYLE_ID))return;
     var el=document.createElement('style');el.id=STYLE_ID;
-    el.textContent=''
-      +'.ltr-hidden{display:none !important}'
-      +'.ltr-card{position:relative !important;padding-right:5.2em !important}'
-      +'.ltr-score{position:absolute;right:.65em;top:.55em;z-index:3;'
-      +'border:1px solid var(--ltr-edge,#399c62);background:rgba(12,24,22,.94);'
-      +'border-radius:.45em;padding:.22em .48em;color:var(--ltr-ink,#65d594);'
-      +'font-weight:700;font-size:.83em;pointer-events:none;white-space:nowrap}'
-      +'.ltr-score::before{content:"★ ";opacity:.8}'
-      +'.ltr-card [class*="seed"]{color:#3fdc83 !important}'
-      +'.ltr-card [class*="leech"],.ltr-card [class*="peer"]{color:#56abff !important}'
-      +'.ltr-card [class*="bitrate"]{color:#3fdc83 !important}'
-      +'.ltr-card [class*="size"],.ltr-card [class*="weight"]{color:#5ada9b !important}'
-      +'.ltr-card [class*="seed"],.ltr-card [class*="leech"],'
-      +'.ltr-card [class*="peer"],.ltr-card [class*="bitrate"],'
-      +'.ltr-card [class*="size"]{font-weight:600}'
-      +'.ltr-card.ltr-best{box-shadow:inset 3px 0 0 #3bd68b}'
-      +'.ltr-card.ltr-warn [class*="seed"]{color:#ecb64d !important}';
+    el.textContent=`
+      .ltr-hidden,.ltr-duplicate{display:none!important}
+      .ltr-ready{display:inline-block!important;margin:.12em .35em .12em 0!important;padding:.12em .42em!important;
+        border-radius:4px!important;background:#1a2925!important;color:#b5d6ca!important;font-size:.78em!important;border:1px solid #426354!important}
+      .ltr-ready.good{color:#57dc94!important;border-color:#358055!important}
+      .ltr-ready.warn{color:#eaca62!important;border-color:#8c6d27!important}
+      .ltr-ready.bad{color:#ef8c86!important;border-color:#99534c!important}
+      .ltr-groups{display:block!important;color:#9ecbb8!important;font-size:.75em!important;margin-top:.22em!important}
+      .ltr-card{position:relative!important;padding-right:5.2em!important}
+      .ltr-score{position:absolute;right:.65em;top:.55em;z-index:3;
+        border:1px solid var(--ltr-edge,#399c62);background:rgba(12,24,22,.94);
+        border-radius:.45em;padding:.22em .48em;color:var(--ltr-ink,#65d594);
+        font-weight:700;font-size:.83em;pointer-events:none;white-space:nowrap}
+      .ltr-score::before{content:"★ ";opacity:.8}
+      .ltr-metric{border:1px solid currentColor!important;border-radius:4px!important;
+        padding:0 .28em!important;font-weight:700!important;background:rgba(0,0,0,.23)!important;
+        box-shadow:none!important;display:inline-block!important;white-space:nowrap!important}
+      .ltr-green{color:#40dc83!important;background:rgba(13,82,43,.35)!important}
+      .ltr-yellow{color:#e9c451!important;background:rgba(93,73,12,.34)!important}
+      .ltr-amber{color:#edab3e!important;background:rgba(111,71,11,.40)!important}
+      .ltr-orange{color:#f5a854!important;background:rgba(101,52,9,.34)!important}
+      .ltr-red{color:#ef7777!important;background:rgba(104,23,23,.33)!important}
+      .ltr-blue{color:#66b6ff!important;background:rgba(20,58,105,.35)!important}
+      .ltr-size{border:1px solid currentColor!important;border-radius:4px!important;
+        padding:0 .28em!important;font-weight:700!important;box-shadow:none!important}
+      .ltr-size.ltr-green{color:#5adb9c!important;background:rgba(16,70,47,.45)!important}
+      .ltr-size.ltr-yellow{color:#e9c451!important;background:rgba(93,73,12,.38)!important}
+      .ltr-size.ltr-amber{color:#edab3e!important;background:rgba(111,71,11,.43)!important}
+      .ltr-size.ltr-orange{color:#f5a854!important;background:rgba(101,52,9,.45)!important}
+      .ltr-card.ltr-best{box-shadow:inset 3px 0 0 #3bd68b}
+    `;
     (document.head||document.documentElement).appendChild(el);
+  }
+  function markMetric(el,type,color){
+    if(!el||el.classList.contains(BADGE))return;
+    var names=['ltr-green','ltr-yellow','ltr-amber','ltr-orange','ltr-red','ltr-blue'];
+    if(type==='size'){
+      el.classList.add('ltr-size');
+      names.forEach(function(c){el.classList.toggle(c,c===color);});
+      return;
+    }
+    el.classList.remove('ltr-size');
+    el.classList.add('ltr-metric');
+    names.forEach(function(c){el.classList.toggle(c,c===color);});
+  }
+  function decorate(card,r){
+    // Look at leaf nodes and the adjacent value nodes, to handle Lampa variants.
+    var nodes=card.querySelectorAll('span,div,b,strong,small');
+    for(var i=0;i<nodes.length && i<250;i++){
+      var el=nodes[i];
+      if(el.classList.contains(BADGE)||el.closest('.'+BADGE))continue;
+      if(el.children.length>1)continue;
+      var tx=n(el.textContent);
+      if(!tx || tx.length>60)continue;
+      if(/(?:ГБ|GB|МБ|MB)\s*$/i.test(tx) && /\d/.test(tx) && !/Битрейт/i.test(tx)){
+        // Metric is already parsed from this card, so use normalized GiB for thresholds.
+        var gb=r.size;
+        // Fall back to the local text if a layout variant prevents card-level extraction.
+        if(gb==null){
+          var sm=tx.match(/(\d+(?:[.,]\d+)?)\s*(ТиБ|TiB|ТБ|TB|ГиБ|GiB|ГБ|GB|МиБ|MiB|МБ|MB)\b/i);
+          if(sm){gb=num(sm[1]);if(/^(?:т|t)/i.test(sm[2]))gb*=1024;else if(/^(?:м|m)/i.test(sm[2]))gb/=1024;}
+        }
+        var sizeColor=gb==null?'ltr-blue':gb<25?'ltr-green':gb<50?'ltr-yellow':gb<100?'ltr-amber':'ltr-orange';
+        markMetric(el,'size',sizeColor); continue;
+      }
+      if(/(?:Раздают|Сиды|Seeders)\s*:?/i.test(tx)){
+        var color=r.seeds==null?'ltr-blue':r.seeds<5?'ltr-red':r.seeds<10?'ltr-yellow':'ltr-green';
+        var target=(tx.match(/\d/) ? el : el.nextElementSibling);
+        if(target)markMetric(target,'metric',color);
+      }
+      if(/(?:Битрейт|Bitrate)\s*:?/i.test(tx)){
+        var color2=r.bitrate==null?'ltr-blue':r.bitrate<50?'ltr-green':r.bitrate<75?'ltr-yellow':r.bitrate<100?'ltr-orange':'ltr-red';
+        var target2=(tx.match(/\d/) ? el : el.nextElementSibling);
+        if(target2)markMetric(target2,'metric',color2);
+      }
+      if(/(?:Качают|Leechers)\s*:?/i.test(tx)){
+        var target3=(tx.match(/\d/) ? el : el.nextElementSibling);
+        if(target3)markMetric(target3,'metric','ltr-blue');
+      }
+    }
   }
   function badge(card,result){
     var el=card.querySelector('.'+BADGE);
     if(!el){el=document.createElement('span');el.className=BADGE;card.appendChild(el);}
-    var hue=result.total>=75?'#54dc94':result.total>=50?'#edc467':'#f28b85';
+    var hue=result.total>=85?'#54dc94':result.total>=65?'#edc467':'#f28b85';
     el.style.setProperty('--ltr-ink',hue);
     el.style.setProperty('--ltr-edge',hue);
     var nextScore=String(result.total)+'/100';
     if(el.textContent!==nextScore)el.textContent=nextScore;
-    var tip='Рейтинг '+result.total+'/100 | качество '+result.subscores.quality+'/30'
-      +' | HDR '+result.subscores.hdr+'/15 | сиды '+result.subscores.seeds+'/25'
-      +' | размер '+result.subscores.size+'/15 | трекер '+result.subscores.tracker+'/15';
+    var tip='Рейтинг '+result.total+'/100 | '+Object.keys(result.subscores).map(function(k){
+      return k+': '+result.subscores[k]+'/'+result.weights[k];
+    }).join(' | ')+' | '+result.release.name+' | '+result.codec+' | '+result.audio.name;
     if(el.title!==tip)el.title=tip;
-    card.classList.toggle('ltr-best',result.total>=75);
+    card.classList.toggle('ltr-best',result.total>=85);
     card.classList.toggle('ltr-warn',result.seeds!==null&&result.seeds<5);
   }
+  function addReadiness(card,result){
+    var el=card.querySelector('.ltr-ready');
+    if(!OPTIONS.showReadiness){if(el)el.remove();return;}
+    if(!el){el=document.createElement('span');el.className='ltr-ready';card.appendChild(el);}
+    el.className='ltr-ready '+(result.readiness.level==='unknown'?'':result.readiness.level);
+    var label='● '+result.readiness.label;
+    if(el.textContent!==label)el.textContent=label;
+    el.title='Оценка по сидам и битрейту, НЕ замер скорости TorrServer';
+  }
+  function hideGroupDuplicates(cards,results){
+    var seen=Object.create(null);
+    cards.forEach(function(card){
+      card.classList.remove('ltr-duplicate');
+      var extra=card.querySelector('.ltr-groups');if(extra)extra.remove();
+      if(!OPTIONS.grouping||card.classList.contains(HIDE))return;
+      var r=results.get(card);
+      if(!r||r.size==null||r.audio.certainty==='неизвестно'||r.quality.name==='Неизвестно')return;
+      // Conservative fingerprint: title + year + format + language + codec + HDR + near-identical size.
+      var base=r.title.toLowerCase().replace(/\[[^\]]*\]/g,' ').replace(/\([^)]*\)/g,' ')
+        .replace(/(2160p|1080p|720p|4k|hdr10\+?|dolby vision|web[ .-]?dl|webrip|remux|bluray|bdrip|x26[45]|h26[45])/g,' ')
+        .replace(/[\\/|:,_-]+/g,' ').replace(/\s+/g,' ').trim().slice(0,90);
+      if(base.length<14)return;
+      var rounded=Math.round(r.size*10)/10;
+      var key=[base,r.quality.name,r.hdr.name,r.audio.name,r.release.name,r.codec,rounded].join('|');
+      if(!seen[key]){seen[key]=card;return;}
+      var winner=seen[key],prev=results.get(winner);
+      if(prev&&prev.total<r.total){winner.classList.add('ltr-duplicate');seen[key]=card;}
+      else card.classList.add('ltr-duplicate');
+      var chosen=seen[key],note=chosen.querySelector('.ltr-groups');
+      if(!note){note=document.createElement('small');note.className='ltr-groups';chosen.appendChild(note);}
+      note.textContent='Есть похожая раздача (отключи группировку для просмотра всех)';
+    });
+  }
+  function registerSettings(){
+    if(!window.Lampa||!Lampa.SettingsApi||!Lampa.SettingsApi.addComponent)return false;
+    try{
+      Lampa.SettingsApi.addComponent({component:'ltr_rank',name:'Tracker Rank',icon:'<svg width="44" height="44" viewBox="0 0 44 44" xmlns="http://www.w3.org/2000/svg"><path fill="currentColor" d="M22 2l6.2 13.3 14.5 1.7-10.7 10 2.8 14.6L22 34.3 9.2 41.6 12 27 1.3 17l14.5-1.7z"/></svg>'});
+      var params=[
+        ['profile','Профиль рейтинга','select',{balanced:'Сбалансированный',cinema:'Максимальное качество',quick:'Быстрый запуск',economy:'Экономия трафика'},'balanced'],
+        ['filter','Фильтровать трекеры','trigger',null,true],
+        ['sorting','Сортировать по рейтингу','trigger',null,true],
+        ['grouping','Скрывать похожие дубликаты','trigger',null,false],
+        ['readiness','Индикатор готовности','trigger',null,true],
+        ['details','Рейтинг на карточках','trigger',null,true]
+      ];
+      CONFIG.allowed.forEach(function(t){params.push(['tracker_'+t.name,'Разрешён '+t.name,'trigger',null,true]);});
+      params.forEach(function(p){
+        var param={name:STORAGE+p[0],type:p[2],default:p[4]};if(p[3])param.values=p[3];
+        Lampa.SettingsApi.addParam({component:'ltr_rank',param:param,
+          field:{name:p[1],description:p[0]==='grouping'?'Осторожная группировка: можно вернуть все раздачи':undefined},
+          onChange:function(){
+            var value;
+            try{value=Lampa.Storage.field(STORAGE+p[0]);}catch(e){value=load(p[0],p[4]);}
+            if(p[0].indexOf('tracker_')===0)OPTIONS.allowed[p[0].slice(8)]=value!==false;
+            else if(p[0]==='profile')OPTIONS.profile=PROFILES[value]?value:'balanced';
+            else OPTIONS[p[0]=== 'readiness'?'showReadiness':p[0]=== 'details'?'showDetails':p[0]]=value;
+            save(p[0],value);schedule();
+          }});
+      });
+      return true;
+    }catch(e){console.warn('[Lampa Tracker Rank] Settings unavailable:',e);return false;}
+  }
   function reconcile(cards){
-    // only reorder homogeneous card groups; do not move unrelated buttons/headers.
-    if(!CONFIG.sortByScore||cards.length<2)return;
+    if(!CONFIG.sortByScore||cards.length<2||reorderLock)return;
     var byParent=new Map();
     cards.forEach(function(card){
-      if(card.classList.contains(HIDE)||!card.parentNode)return;
+      if(!card.parentNode)return;
       var p=card.parentNode;
       if(!byParent.has(p))byParent.set(p,[]);
       byParent.get(p).push(card);
     });
     byParent.forEach(function(group,parent){
       if(group.length<2)return;
-      var children=Array.prototype.slice.call(parent.children);
-      var eligible=children.every(function(ch){return ch.matches&&ch.matches(CONFIG.cardSelector);});
-      if(!eligible)return;
-      group.sort(function(a,b){
-        var aa=num(a.dataset.ltrScore),bb=num(b.dataset.ltrScore);
-        return bb-aa || (originalOrder.get(a)||0)-(originalOrder.get(b)||0);
+      // Sorting must include hidden cards to preserve correct ordinal positions.
+      var current=Array.prototype.slice.call(parent.children).filter(function(el){return group.indexOf(el)!==-1;});
+      if(current.length<2)return;
+      var desired=current.slice().sort(function(a,b){
+        var ah=a.classList.contains(HIDE)||a.classList.contains('ltr-duplicate'),bh=b.classList.contains(HIDE)||b.classList.contains('ltr-duplicate');
+        if(ah!==bh)return ah?1:-1;
+        return num(b.dataset.ltrScore)-num(a.dataset.ltrScore)
+          || (originalOrder.get(a)||0)-(originalOrder.get(b)||0);
       });
-      var current=children.filter(function(ch){return !ch.classList.contains(HIDE);});
-      if(group.every(function(ch,i){return current[i]===ch;}))return;
+      if(desired.every(function(el,i){return el===current[i];}))return;
       var focused=document.activeElement;
-      internalMutation=true;
-      group.forEach(function(ch){parent.appendChild(ch);});
-      // Moving nodes must not steal TV remote focus.
+      // Placeholders preserve headers and control elements interleaved with cards.
+      reorderLock=true; internalMutation=true;
+      var slots=current.map(function(el){var c=document.createComment('ltr-slot');parent.insertBefore(c,el);parent.removeChild(el);return c;});
+      slots.forEach(function(slot,i){parent.replaceChild(desired[i],slot);});
       if(focused&&focused.isConnected&&focused.focus)try{focused.focus({preventScroll:true});}catch(e){}
-      setTimeout(function(){internalMutation=false;},0);
     });
+    if(reorderLock)setTimeout(function(){reorderLock=false;internalMutation=false;schedule();},60);
   }
   function scan(){
     pending=false;
     if(disabled)return;
     var cards=Array.prototype.slice.call(document.querySelectorAll(CONFIG.cardSelector)).slice(0,MAX_CARDS);
+    var results=new Map();
     cards.forEach(function(card,i){
       if(!originalOrder.has(card))originalOrder.set(card,i);
       // Skip our own nodes when extracting metadata, via dedicated selectors.
       var result=score(card);
-      var hidden=(result.matched.length===0) && (CONFIG.hideUnknown||!!result.source);
+      var hidden=OPTIONS.filter && !result.matched.some(function(t){return OPTIONS.allowed[t];});
       card.classList.toggle(HIDE,hidden);
       card.classList.add(CARD);
       card.dataset.ltrScore=String(result.total);
       card.dataset.ltrSources=result.matched.join(',');
-      badge(card,result);
+      if(OPTIONS.showDetails)badge(card,result);else{var b=card.querySelector('.'+BADGE);if(b)b.remove();}
+      decorate(card,result);
+      addReadiness(card,result);
+      results.set(card,result);
       generated.set(card,result);
     });
-    reconcile(cards);
+    hideGroupDuplicates(cards,results);
+    if(OPTIONS.sorting)reconcile(cards);
   }
   function schedule(){
     if(disabled||pending||internalMutation)return;
@@ -244,23 +456,42 @@
     setTimeout(scan,180);
   }
   style();
-  observed=new MutationObserver(schedule);
+  var settingsReady=registerSettings();
+  if(!settingsReady){
+    var tries=0;
+    var settingsTimer=setInterval(function(){
+      if(disabled||registerSettings()||++tries>=15)clearInterval(settingsTimer);
+    },1000);
+  }
+  observed=new MutationObserver(function(mutations){
+    if(internalMutation)return;
+    // Ignore our own badges and readiness labels to prevent observe/scan loops.
+    if(mutations.every(function(m){return m.target.closest && m.target.closest('.ltr-score,.ltr-ready,.ltr-groups');}))return;
+    schedule();
+  });
   observed.observe(document.documentElement,{childList:true,subtree:true,characterData:true});
   schedule();
   window.LampaTrackerRank={
-    version:'1.0.0',
-    config:CONFIG,
+    version:'1.3.0',
+    config:CONFIG,options:OPTIONS,profiles:PROFILES,
     refresh:scan,
+    setOption:function(key,value){if(key==='profile'&& !PROFILES[value])return;
+      if(key.indexOf('tracker_')===0)OPTIONS.allowed[key.slice(8)]=!!value;
+      else if(key==='readiness')OPTIONS.showReadiness=!!value;
+      else if(key==='details')OPTIONS.showDetails=!!value;
+      else OPTIONS[key]=value;save(key,value);schedule();},
     inspect:function(card){return card?score(card):null;},
     disable:function(){
       disabled=true; if(observed)observed.disconnect();
       document.querySelectorAll(CONFIG.cardSelector).forEach(function(card){
-        card.classList.remove(HIDE,CARD,'ltr-best','ltr-warn');
+        card.classList.remove(HIDE,CARD,'ltr-best','ltr-warn','ltr-duplicate');
+        var r=card.querySelector('.ltr-ready');if(r)r.remove();
+        var d=card.querySelector('.ltr-groups');if(d)d.remove();
         var b=card.querySelector('.'+BADGE);if(b)b.remove();
         delete card.dataset.ltrScore;delete card.dataset.ltrSources;
       });
       var st=document.getElementById(STYLE_ID);if(st)st.remove();
     }
   };
-  console.info('[Lampa Tracker Rank] Loaded (5 trackers, colour badges, scoring).');
+  console.info('[Lampa Tracker Rank v1.3.0] All six features loaded.');
 })();
