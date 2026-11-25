@@ -1,4 +1,4 @@
-/* Lampa Torrent Assistant v0.3.0 (experimental)
+/* Lampa Torrent Assistant v0.3.1 (experimental)
  * Prefetch public JacRed-compatible APIs on FULL movie/TV details only.
  * Uses the same score WEIGHTS as Tracker Rank (profile-aware), JSON field extraction.
  * Does not send data anywhere except the configured public parser endpoints.
@@ -6,7 +6,7 @@
  */
 (function(){
   'use strict';
-  var VERSION='0.3.0', PREVIOUS=window.LampaTorrentAssistant;
+  var VERSION='0.3.1', PREVIOUS=window.LampaTorrentAssistant;
   if(PREVIOUS && PREVIOUS.version===VERSION)return;
   if(PREVIOUS && typeof PREVIOUS.disable==='function')try{PREVIOUS.disable();}catch(e){}
   // v0.1 had no disable() method: it registered a legacy listener. Avoid enabling both at once;
@@ -19,7 +19,7 @@
     allowed:/\b(?:rutracker|kinozal|rutor|nnmclub|nnm-club|torrentby|torrent\.by)\b/i,
     redirectPlay:true, maxResults:600
   };
-  var KEY_PREFIX='lta_v03_', CSS_ID='lta-v03-style', activeToken=0, timers=[], listener=null,
+  var KEY_PREFIX='lta_v031_', CSS_ID='lta-v031-style', activeToken=0, timers=[], listener=null,
       currentKey='',currentMovie=null,closed=false,requestController=null,runTimer=null,observer=null;
   var cacheMemory={};
   var DEFAULT_WEIGHTS={quality:30,hdr:10,audio:25,release:10,seeds:20,size:5,tracker:0};
@@ -229,7 +229,7 @@
     if(rank&&rank.options&&rank.options.filter===false)return true;
     if(rank&&rank.options&&rank.options.allowed){
       var choices=rank.options.allowed;
-      var names={RuTracker:/\\brutracker\\b/i,Kinozal:/\\bkinozal\\b/i,Rutor:/\\brutor\\b/i,NNMClub:/\\b(?:nnmclub|nnm-club)\\b/i,TorrentBy:/\\b(?:torrentby|torrent\\.by)\\b/i};
+      var names={RuTracker:/\brutracker\b/i,Kinozal:/\bkinozal\b/i,Rutor:/\brutor\b/i,NNMClub:/\b(?:nnmclub|nnm-club)\b/i,TorrentBy:/\b(?:torrentby|torrent\.by)\b/i};
       return Object.keys(names).some(function(k){return choices[k]!==false&&names[k].test(tracker);});
     }
     return CONFIG.allowed.test(tracker);
@@ -272,9 +272,9 @@
     var el=document.createElement('style');el.id=CSS_ID;
     el.textContent=
       '.lta-v03{display:inline-flex;align-items:center;gap:.35em;width:max-content;max-width:100%;'+
-      'white-space:normal;margin:.18em 0 .22em;padding:.25em .52em;border-radius:.35em;'+
+      'white-space:normal;margin:.44em 0 .52em;padding:.28em .58em;border-radius:.35em;'+
       'border:1px solid #53635b;background:rgba(16,27,24,.79);color:#c4d2cb;'+
-      'font-size:.82em;font-weight:650;line-height:1.35;clear:both}'+
+      'font-size:.82em;font-weight:650;line-height:1.35;clear:both;vertical-align:middle}'+
       '.lta-v03.good{border-color:#359966;color:#64e5a1}'+
       '.lta-v03.warn{border-color:#b48d36;color:#edc76b}'+
       '.lta-v03.bad{border-color:#bd5e57;color:#f59b92}'+
