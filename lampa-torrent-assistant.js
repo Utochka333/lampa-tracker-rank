@@ -1,4 +1,4 @@
-/* Lampa Torrent Assistant v0.3.2 (experimental)
+/* Lampa Torrent Assistant v0.3.3 (experimental)
  * Prefetch public JacRed-compatible APIs on FULL movie/TV details only.
  * Uses the same score WEIGHTS as Tracker Rank (profile-aware), JSON field extraction.
  * Does not send data anywhere except the configured public parser endpoints.
@@ -6,7 +6,7 @@
  */
 (function(){
   'use strict';
-  var VERSION='0.3.2', PREVIOUS=window.LampaTorrentAssistant;
+  var VERSION='0.3.3', PREVIOUS=window.LampaTorrentAssistant;
   if(PREVIOUS && PREVIOUS.version===VERSION)return;
   if(PREVIOUS && typeof PREVIOUS.disable==='function')try{PREVIOUS.disable();}catch(e){}
   // v0.1 had no disable() method: it registered a legacy listener. Avoid enabling both at once;
@@ -19,7 +19,7 @@
     allowed:/\b(?:rutracker|kinozal|rutor|nnmclub|nnm-club|torrentby|torrent\.by)\b/i,
     redirectPlay:true, maxResults:600
   };
-  var KEY_PREFIX='lta_v032_', CSS_ID='lta-v032-style', activeToken=0, timers=[], listener=null,
+  var KEY_PREFIX='lta_v033_', CSS_ID='lta-v033-style', activeToken=0, timers=[], listener=null,
       currentKey='',currentMovie=null,closed=false,requestController=null,runTimer=null,observer=null;
   var cacheMemory={};
   var DEFAULT_WEIGHTS={quality:30,hdr:10,audio:25,release:10,seeds:20,size:5,tracker:0};
@@ -281,8 +281,8 @@
     if(document.getElementById(CSS_ID))return;
     var el=document.createElement('style');el.id=CSS_ID;
     el.textContent=
-      '.lta-v03{display:flex;align-items:center;justify-content:center;gap:.35em;width:max-content;max-width:95%;'+
-      'white-space:normal;margin:.5em auto .6em!important;padding:.28em .65em;border-radius:.35em;'+
+      '.lta-v03{display:inline-flex;align-items:center;justify-content:flex-start;gap:.35em;width:max-content;max-width:95%;'+
+      'white-space:normal;margin:.55em 0 .55em 0!important;padding:.28em .65em;border-radius:.35em;'+
       'border:1px solid #53635b;background:rgba(16,27,24,.79);color:#c4d2cb;'+
       'font-size:.82em;font-weight:650;line-height:1.35;clear:both;vertical-align:middle}'+
       '.lta-v03.good{border-color:#359966;color:#64e5a1}'+
@@ -319,14 +319,16 @@
     var message='',level='';
     if(state.status==='loading')message='⌛ Проверяем торренты…';
     else if(state.status==='found'&&state.best){
-      message=(state.confirmed?'Лучший торрент: ':'Поиск · лучший: ')+state.best.score+' · '+state.best.quality+' · '+(state.best.seeds==null?'?':state.best.seeds)+' раздающих';
+      message=(state.confirmed?'Лучший торрент: ':'Предварительно: ')+state.best.score+' · '+state.best.quality+' · '+(state.best.seeds==null?'?':state.best.seeds)+' раздающих';
       level=state.best.score>75?'good':state.best.score>=55?'warn':'bad';
     }else if(state.status==='empty')message='Поиск не нашёл подходящих (проверь список вручную)';
     else if(state.status==='error')message='⚠ Не удалось проверить раздачи';
     else message='Торренты ещё не проверены';
-    badge.text(message).removeClass('good warn bad').addClass(level);
+    if(badge.text()!==message)badge.text(message);
+    badge.removeClass('good warn bad').addClass(level);
     badge.attr('title',state.status==='found'&&state.best?state.best.title+' | '+state.best.audio+' · '+state.best.tracker+' · '+state.best.sizeGB+' ГБ · '+state.server:'Предварительная проверка через публичные парсеры');
   }
+  var lastListSignature='';
   function captureVisibleRankedResults(){
     var rank=window.LampaTrackerRank;
     if(!currentMovie||!rank||typeof rank.inspect!=='function')return;
@@ -336,16 +338,25 @@
     if(!visible.length)return;
     var results=[];
     visible.forEach(function(card){
+      // The live card is the source of truth: score AND seeder count come from the same scan.
       var item=rank.inspect(card);
-      if(!item||!Number.isFinite(item.total)||!isRelated({Title:item.title},currentMovie))return;
-      if(!item.matched||!item.matched.length)return;
+      if(!item||!Number.isFinite(item.total)||!item.matched||!item.matched.length)return;
+      if(!isRelated({Title:item.title},currentMovie))return;
       results.push({score:item.total,title:item.title,quality:item.quality.name,
         audio:item.audio.name,seeds:item.seeds,sizeGB:item.size,tracker:item.matched.join(', ')});
     });
     if(!results.length)return;
-    results.sort(function(a,b){return b.score-a.score;});
-    var d={status:'found',best:results[0],number:results.length,server:'Список Lampa',confirmed:true,at:Date.now()};
+    results.sort(function(a,b){return b.score-a.score||(b.seeds||0)-(a.seeds||0);});
+    var best=results[0];
+    var signature=[currentMovie.key,best.title,best.score,best.seeds,results.length].join('|');
+    if(signature===lastListSignature)return;
+    lastListSignature=signature;
+    var d={status:'found',best:best,number:results.length,server:'Список Lampa',confirmed:true,at:Date.now()};
     writeCache(currentMovie,d);
+    // If the movie details page is still visible, immediately repaint its score.
+    // Avoid unnecessary DOM mutations; changes to the list can arrive in several waves.
+    var root=activeRoot();
+    if(root&&root.length&&root.find('.lta-v03').length)paint(root,currentMovie,d);
   }
   function bindPlay(root){
     if(!CONFIG.redirectPlay||!root||!root.length)return;
@@ -374,12 +385,12 @@
   function onDetails(evt){
     if(!evt||evt.type!=='complite'||!evt.object||!evt.object.activity)return;
     var movie=parseMovie(movieOf(evt));if(!movie)return;
+    if(currentKey!==movie.key)lastListSignature='';
     currentMovie=movie;currentKey=movie.key;
     var token=++activeToken,root=evt.object.activity.render();
     bindPlay(root);
     var cached=readCache(movie);
-    if(cached){paint(root,movie,cached);return;}
-    paint(root,movie,{status:'loading'});
+    paint(root,movie,cached||{status:'loading'});
     if(runTimer)clearTimeout(runTimer);
     runTimer=setTimeout(function(){
       if(closed||token!==activeToken)return;
@@ -388,7 +399,7 @@
         .then(function(primaryResults){
           var p=bestFrom(primaryResults,movie);
           p.server='jac.stull.xyz';
-          if(!closed&&token===activeToken&&p.status==='found')paint(root,movie,p);
+          if(!closed&&token===activeToken&&p.status==='found'){var live=readCache(movie);paint(root,movie,live&&live.confirmed?live:p);}
           return {primary:primaryResults,result:p};
         })
         .catch(function(error){
@@ -404,8 +415,14 @@
           if(closed||token!==activeToken)return;
           var merged=bestFrom(mergeResults([data.primary,data.secondary]),movie);
           merged.server=data.secondary.length?'jac.stull.xyz + jac.black':'jac.stull.xyz';
-          if(merged.status==='found'&&!readCache(movie)?.confirmed)writeCache(movie,merged);
-          paint(root,movie,merged.status==='empty'&&primaryError&&data.secondary.length===0?{status:'error'}:merged);
+          var confirmed=readCache(movie);
+          if(confirmed&&confirmed.confirmed){
+            // The live, already ranked Lampa list takes precedence over older API data.
+            paint(root,movie,confirmed);
+          }else{
+            if(merged.status==='found')writeCache(movie,merged);
+            paint(root,movie,merged.status==='empty'&&primaryError&&data.secondary.length===0?{status:'error'}:merged);
+          }
         })
         .catch(function(err){
           if(closed||token!==activeToken)return;
