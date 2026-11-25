@@ -1,11 +1,11 @@
-/* Lampa Tracker Rank v1.3.1 — combined tracker allowlist, scoring, colouring.
+/* Lampa Tracker Rank v1.3.2 — combined tracker allowlist, scoring, colouring.
  * Works on rendered torrent items from public parsers; no parser requests modified.
  * Local-only UI logic. Disable competing Torrent Styles v2 before installing.
  */
 (function () {
   'use strict';
   if (window.LampaTrackerRank) {
-    if (window.LampaTrackerRank.version === '1.3.1') return;
+    if (window.LampaTrackerRank.version === '1.3.2') return;
     try { if (window.LampaTrackerRank.disable) window.LampaTrackerRank.disable(); } catch(e) {}
   }
 
@@ -51,6 +51,7 @@
     allowed:{}
   };
   CONFIG.allowed.forEach(function(t){OPTIONS.allowed[t.name]=load('tracker_'+t.name,true)!==false;});
+  function isKnownTracker(name){return CONFIG.allowed.some(function(t){return t.name===name;});}
   if(!PROFILES[OPTIONS.profile])OPTIONS.profile='balanced';
   var STYLE_ID='lampa-tracker-rank-css';
   var HIDE='ltr-hidden';
@@ -241,48 +242,61 @@
     var el=document.createElement('style');el.id=STYLE_ID;
     el.textContent=`
       .ltr-hidden,.ltr-duplicate{display:none!important}
-      .ltr-ready{display:inline-block!important;margin:.12em .35em .12em 0!important;padding:.12em .42em!important;
-        border-radius:4px!important;background:#1a2925!important;color:#b5d6ca!important;font-size:.78em!important;border:1px solid #426354!important}
+      /* Single typography system for the bitrate, seeds, peers, size and readiness labels. */
+      .ltr-card .ltr-ready{
+        display:inline-flex!important;align-items:center!important;justify-content:center!important;
+        margin:.15em .35em .15em 0!important;padding:.34em .62em!important;
+        border-radius:5px!important;background:#1a2925!important;color:#b5d6ca!important;
+        font-family:inherit!important;font-size:.88em!important;font-weight:800!important;
+        line-height:1.3!important;letter-spacing:0!important;
+        border:1px solid #426354!important;box-sizing:border-box!important;
+      }
       .ltr-ready.good{color:#57dc94!important;border-color:#358055!important}
       .ltr-ready.warn{color:#eaca62!important;border-color:#8c6d27!important}
       .ltr-ready.bad{color:#ef8c86!important;border-color:#99534c!important}
       .ltr-groups{display:block!important;color:#9ecbb8!important;font-size:.75em!important;margin-top:.22em!important}
-      .ltr-card{position:relative!important;padding-right:5.2em!important}
+      .ltr-card{position:relative!important;padding-right:3.4em!important}
       .ltr-score{position:absolute;right:.65em;top:.55em;z-index:3;
         border:1px solid var(--ltr-edge,#399c62);background:rgba(12,24,22,.94);
         border-radius:.45em;padding:.22em .48em;color:var(--ltr-ink,#65d594);
-        font-weight:700;font-size:.83em;pointer-events:none;white-space:nowrap}
-      .ltr-score::before{content:"★ ";opacity:.8}
-      /* One clean outline per metric, with no second chip around inner values. */
-      .ltr-metric,.ltr-size{
-        border:1px solid currentColor!important;border-radius:4px!important;
-        padding:.10em .38em!important;font-weight:700!important;
+        font-weight:800;font-size:.97em;line-height:1.1;pointer-events:none;white-space:nowrap}
+      /* Numeric rating only, no decorative star. */
+      /* Metrics: consistent font, centred text, larger single-outline badges. */
+      .ltr-card .ltr-metric,.ltr-card .ltr-size{
+        display:inline-flex!important;align-items:center!important;justify-content:center!important;
+        vertical-align:middle!important;gap:.24em!important;
+        border:1px solid currentColor!important;border-radius:5px!important;
+        padding:.26em .54em!important;min-height:1.75em!important;
+        font-family:inherit!important;font-size:.88em!important;font-weight:800!important;
+        line-height:1.3!important;letter-spacing:0!important;
         box-shadow:none!important;white-space:nowrap!important;
-        width:max-content!important;max-width:max-content!important;min-width:0!important;
-        flex:0 0 auto!important;align-self:center!important;
-        box-sizing:border-box!important;line-height:1.15!important;
-        display:inline-flex!important;align-items:center!important;gap:.18em!important;
+        width:fit-content!important;max-width:max-content!important;min-width:0!important;
+        flex:0 0 auto!important;align-self:center!important;box-sizing:border-box!important;
+        background:rgba(0,0,0,.22)!important;
       }
-      .ltr-metric{background:rgba(0,0,0,.23)!important}
-      .ltr-size{background:rgba(0,0,0,.23)!important}
-      /* Lampa wraps the numeric value in a separate chip. Unwrap visually. */
       .ltr-card .ltr-metric *, .ltr-card .ltr-size *{
         background:transparent!important;background-color:transparent!important;
         border:0!important;outline:0!important;box-shadow:none!important;
         border-radius:0!important;padding:0!important;margin:0!important;
-        color:inherit!important;line-height:inherit!important;
+        color:inherit!important;font-family:inherit!important;font-size:inherit!important;
+        font-weight:inherit!important;line-height:inherit!important;
         min-width:0!important;max-width:none!important;
       }
-      .ltr-green{color:#40dc83!important;background:rgba(13,82,43,.35)!important}
-      .ltr-yellow{color:#e9c451!important;background:rgba(93,73,12,.34)!important}
-      .ltr-amber{color:#edab3e!important;background:rgba(111,71,11,.40)!important}
-      .ltr-orange{color:#f5a854!important;background:rgba(101,52,9,.34)!important}
-      .ltr-red{color:#ef7777!important;background:rgba(104,23,23,.33)!important}
-      .ltr-blue{color:#66b6ff!important;background:rgba(20,58,105,.35)!important}
-      .ltr-size.ltr-green{color:#5adb9c!important;background:rgba(16,70,47,.45)!important}
-      .ltr-size.ltr-yellow{color:#e9c451!important;background:rgba(93,73,12,.38)!important}
-      .ltr-size.ltr-amber{color:#edab3e!important;background:rgba(111,71,11,.43)!important}
-      .ltr-size.ltr-orange{color:#f5a854!important;background:rgba(101,52,9,.45)!important}
+      .ltr-card .ltr-metric-label{
+        font-family:inherit!important;font-size:.88em!important;font-weight:800!important;
+        line-height:1.3!important;letter-spacing:0!important;text-transform:none!important;
+        display:inline-flex!important;align-items:center!important;vertical-align:middle!important;
+      }
+      .ltr-card .ltr-green{color:#40dc83!important;background:rgba(13,82,43,.35)!important}
+      .ltr-card .ltr-yellow{color:#e9c451!important;background:rgba(93,73,12,.34)!important}
+      .ltr-card .ltr-amber{color:#edab3e!important;background:rgba(111,71,11,.40)!important}
+      .ltr-card .ltr-orange{color:#f5a854!important;background:rgba(101,52,9,.34)!important}
+      .ltr-card .ltr-red{color:#ef7777!important;background:rgba(104,23,23,.33)!important}
+      .ltr-card .ltr-blue{color:#66b6ff!important;background:rgba(20,58,105,.35)!important}
+      .ltr-card .ltr-size.ltr-green{color:#5adb9c!important;background:rgba(16,70,47,.45)!important}
+      .ltr-card .ltr-size.ltr-yellow{color:#e9c451!important;background:rgba(93,73,12,.38)!important}
+      .ltr-card .ltr-size.ltr-amber{color:#edab3e!important;background:rgba(111,71,11,.43)!important}
+      .ltr-card .ltr-size.ltr-orange{color:#f5a854!important;background:rgba(101,52,9,.45)!important}
       .ltr-card.ltr-best{box-shadow:inset 3px 0 0 #3bd68b}
     `;
     (document.head||document.documentElement).appendChild(el);
@@ -309,7 +323,7 @@
       if(el.children.length>1)continue;
       var tx=n(el.textContent);
       if(!tx || tx.length>60)continue;
-      if(/(?:ГБ|GB|МБ|MB)\s*$/i.test(tx) && /\d/.test(tx) && !/Битрейт/i.test(tx)){
+      if(/(?:ТиБ|TiB|ТБ|TB|ГиБ|GiB|ГБ|GB|МиБ|MiB|МБ|MB)\s*$/i.test(tx) && /\d/.test(tx) && !/Битрейт/i.test(tx)){
         // Metric is already parsed from this card, so use normalized GiB for thresholds.
         var gb=r.size;
         // Fall back to the local text if a layout variant prevents card-level extraction.
@@ -324,31 +338,34 @@
         var color=r.seeds==null?'ltr-blue':r.seeds<5?'ltr-red':r.seeds<10?'ltr-yellow':'ltr-green';
         var target=(tx.match(/\d/) ? el : el.nextElementSibling);
         if(target)markMetric(target,'metric',color);
+        el.classList.add('ltr-metric-label');
       }
       if(/(?:Битрейт|Bitrate)\s*:?/i.test(tx)){
         var color2=r.bitrate==null?'ltr-blue':r.bitrate<50?'ltr-green':r.bitrate<75?'ltr-yellow':r.bitrate<100?'ltr-orange':'ltr-red';
         var target2=(tx.match(/\d/) ? el : el.nextElementSibling);
         if(target2)markMetric(target2,'metric',color2);
+        el.classList.add('ltr-metric-label');
       }
       if(/(?:Качают|Leechers)\s*:?/i.test(tx)){
         var target3=(tx.match(/\d/) ? el : el.nextElementSibling);
         if(target3)markMetric(target3,'metric','ltr-blue');
+        el.classList.add('ltr-metric-label');
       }
     }
   }
   function badge(card,result){
     var el=card.querySelector('.'+BADGE);
     if(!el){el=document.createElement('span');el.className=BADGE;card.appendChild(el);}
-    var hue=result.total>=85?'#54dc94':result.total>=65?'#edc467':'#f28b85';
+    var hue=result.total>75?'#54dc94':result.total>=55?'#edc467':'#f28b85';
     el.style.setProperty('--ltr-ink',hue);
     el.style.setProperty('--ltr-edge',hue);
-    var nextScore=String(result.total)+'/100';
+    var nextScore=String(result.total);
     if(el.textContent!==nextScore)el.textContent=nextScore;
     var tip='Рейтинг '+result.total+'/100 | '+Object.keys(result.subscores).map(function(k){
       return k+': '+result.subscores[k]+'/'+result.weights[k];
     }).join(' | ')+' | '+result.release.name+' | '+result.codec+' | '+result.audio.name;
     if(el.title!==tip)el.title=tip;
-    card.classList.toggle('ltr-best',result.total>=85);
+    card.classList.toggle('ltr-best',result.total>75);
     card.classList.toggle('ltr-warn',result.seeds!==null&&result.seeds<5);
   }
   function addReadiness(card,result){
@@ -356,7 +373,7 @@
     if(!OPTIONS.showReadiness){if(el)el.remove();return;}
     if(!el){el=document.createElement('span');el.className='ltr-ready';card.appendChild(el);}
     el.className='ltr-ready '+(result.readiness.level==='unknown'?'':result.readiness.level);
-    var label='● '+result.readiness.label;
+    var label='● '+result.readiness.label.charAt(0).toUpperCase()+result.readiness.label.slice(1);
     if(el.textContent!==label)el.textContent=label;
     el.title='Оценка по сидам и битрейту, НЕ замер скорости TorrServer';
   }
@@ -401,10 +418,10 @@
         var param={name:STORAGE+p[0],type:p[2],default:p[4]};if(p[3])param.values=p[3];
         Lampa.SettingsApi.addParam({component:'ltr_rank',param:param,
           field:{name:p[1],description:p[0]==='grouping'?'Осторожная группировка: можно вернуть все раздачи':undefined},
-          onChange:function(){
-            var value;
-            try{value=Lampa.Storage.field(STORAGE+p[0]);}catch(e){value=load(p[0],p[4]);}
-            if(p[0].indexOf('tracker_')===0)OPTIONS.allowed[p[0].slice(8)]=value!==false;
+          onChange:function(changed){
+            var value=(typeof changed==='boolean'||typeof changed==='string')?changed:undefined;
+            if(value===undefined){try{value=Lampa.Storage.field(STORAGE+p[0]);}catch(e){value=load(p[0],p[4]);}}
+            if(p[0].indexOf('tracker_')===0){OPTIONS.allowed[p[0].slice(8)]=value!==false;}
             else if(p[0]==='profile')OPTIONS.profile=PROFILES[value]?value:'balanced';
             else OPTIONS[p[0]=== 'readiness'?'showReadiness':p[0]=== 'details'?'showDetails':p[0]]=value;
             save(p[0],value);schedule();
@@ -488,11 +505,11 @@
   observed.observe(document.documentElement,{childList:true,subtree:true,characterData:true});
   schedule();
   window.LampaTrackerRank={
-    version:'1.3.1',
+    version:'1.3.2',
     config:CONFIG,options:OPTIONS,profiles:PROFILES,
     refresh:scan,
     setOption:function(key,value){if(key==='profile'&& !PROFILES[value])return;
-      if(key.indexOf('tracker_')===0)OPTIONS.allowed[key.slice(8)]=!!value;
+      if(key.indexOf('tracker_')===0){if(!isKnownTracker(key.slice(8)))return; OPTIONS.allowed[key.slice(8)]=!!value;}
       else if(key==='readiness')OPTIONS.showReadiness=!!value;
       else if(key==='details')OPTIONS.showDetails=!!value;
       else OPTIONS[key]=value;save(key,value);schedule();},
@@ -506,8 +523,11 @@
         var b=card.querySelector('.'+BADGE);if(b)b.remove();
         delete card.dataset.ltrScore;delete card.dataset.ltrSources;
       });
+      document.querySelectorAll('.ltr-metric,.ltr-size,.ltr-metric-label').forEach(function(el){
+        ['ltr-metric','ltr-size','ltr-metric-label','ltr-green','ltr-yellow','ltr-amber','ltr-orange','ltr-red','ltr-blue'].forEach(function(cls){el.classList.remove(cls);});
+      });
       var st=document.getElementById(STYLE_ID);if(st)st.remove();
     }
   };
-  console.info('[Lampa Tracker Rank v1.3.1] All six features loaded.');
+  console.info('[Lampa Tracker Rank v1.3.2] All six features loaded.');
 })();
