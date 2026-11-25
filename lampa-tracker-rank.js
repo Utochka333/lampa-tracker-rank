@@ -1,11 +1,11 @@
-/* Lampa Tracker Rank v1.3.2 — combined tracker allowlist, scoring, colouring.
+/* Lampa Tracker Rank v1.3.3 — combined tracker allowlist, scoring, colouring.
  * Works on rendered torrent items from public parsers; no parser requests modified.
  * Local-only UI logic. Disable competing Torrent Styles v2 before installing.
  */
 (function () {
   'use strict';
   if (window.LampaTrackerRank) {
-    if (window.LampaTrackerRank.version === '1.3.2') return;
+    if (window.LampaTrackerRank.version === '1.3.3') return;
     try { if (window.LampaTrackerRank.disable) window.LampaTrackerRank.disable(); } catch(e) {}
   }
 
@@ -246,6 +246,8 @@
       .ltr-card .ltr-ready{
         display:inline-flex!important;align-items:center!important;justify-content:center!important;
         margin:.15em .35em .15em 0!important;padding:.34em .62em!important;
+        /* Small visual offset: centre the readiness label between date and card edge. */
+        position:relative!important;top:.44em!important;
         border-radius:5px!important;background:#1a2925!important;color:#b5d6ca!important;
         font-family:inherit!important;font-size:.88em!important;font-weight:800!important;
         line-height:1.3!important;letter-spacing:0!important;
@@ -256,7 +258,7 @@
       .ltr-ready.bad{color:#ef8c86!important;border-color:#99534c!important}
       .ltr-groups{display:block!important;color:#9ecbb8!important;font-size:.75em!important;margin-top:.22em!important}
       .ltr-card{position:relative!important;padding-right:3.4em!important}
-      .ltr-score{position:absolute;right:.65em;top:.55em;z-index:3;
+      .ltr-score{position:absolute;right:.65em;top:1.25em;z-index:3;
         border:1px solid var(--ltr-edge,#399c62);background:rgba(12,24,22,.94);
         border-radius:.45em;padding:.22em .48em;color:var(--ltr-ink,#65d594);
         font-weight:800;font-size:.97em;line-height:1.1;pointer-events:none;white-space:nowrap}
@@ -265,6 +267,8 @@
       .ltr-card .ltr-metric,.ltr-card .ltr-size{
         display:inline-flex!important;align-items:center!important;justify-content:center!important;
         vertical-align:middle!important;gap:.24em!important;
+        /* Align torrent metrics slightly below the source/date baseline. */
+        position:relative!important;top:.36em!important;
         border:1px solid currentColor!important;border-radius:5px!important;
         padding:.26em .54em!important;min-height:1.75em!important;
         font-family:inherit!important;font-size:.88em!important;font-weight:800!important;
@@ -286,6 +290,7 @@
         font-family:inherit!important;font-size:.88em!important;font-weight:800!important;
         line-height:1.3!important;letter-spacing:0!important;text-transform:none!important;
         display:inline-flex!important;align-items:center!important;vertical-align:middle!important;
+        position:relative!important;top:.36em!important;
       }
       .ltr-card .ltr-green{color:#40dc83!important;background:rgba(13,82,43,.35)!important}
       .ltr-card .ltr-yellow{color:#e9c451!important;background:rgba(93,73,12,.34)!important}
@@ -505,7 +510,7 @@
   observed.observe(document.documentElement,{childList:true,subtree:true,characterData:true});
   schedule();
   window.LampaTrackerRank={
-    version:'1.3.2',
+    version:'1.3.3',
     config:CONFIG,options:OPTIONS,profiles:PROFILES,
     refresh:scan,
     setOption:function(key,value){if(key==='profile'&& !PROFILES[value])return;
@@ -529,5 +534,5 @@
       var st=document.getElementById(STYLE_ID);if(st)st.remove();
     }
   };
-  console.info('[Lampa Tracker Rank v1.3.2] All six features loaded.');
+  console.info('[Lampa Tracker Rank v1.3.3] All six features loaded.');
 })();
