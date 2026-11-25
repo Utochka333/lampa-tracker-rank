@@ -1,11 +1,11 @@
-/* Lampa Tracker Rank v1.3.3 — combined tracker allowlist, scoring, colouring.
+/* Lampa Tracker Rank v1.3.4 — combined tracker allowlist, scoring, colouring.
  * Works on rendered torrent items from public parsers; no parser requests modified.
  * Local-only UI logic. Disable competing Torrent Styles v2 before installing.
  */
 (function () {
   'use strict';
   if (window.LampaTrackerRank) {
-    if (window.LampaTrackerRank.version === '1.3.3') return;
+    if (window.LampaTrackerRank.version === '1.3.4') return;
     try { if (window.LampaTrackerRank.disable) window.LampaTrackerRank.disable(); } catch(e) {}
   }
 
@@ -218,10 +218,10 @@
   }
   function readiness(seeds,bitrate){
     if(seeds===null||seeds===undefined)return {label:'скорость не проверена',level:'unknown'};
-    if(seeds<5)return {label:'мало сидов',level:'bad'};
-    if(seeds<10)return {label:'сидов немного',level:'warn'};
+    if(seeds<5)return {label:'Мало раздающих',level:'bad'};
+    if(seeds<10)return {label:'Раздающих немного',level:'warn'};
     if(bitrate!==null&&bitrate>=100&&seeds<40)return {label:'высокий битрейт',level:'warn'};
-    return {label:'сидов достаточно',level:'good'};
+    return {label:'Раздающих достаточно',level:'good'};
   }
   function score(card){
     var source=sourceString(card);
@@ -510,7 +510,7 @@
   observed.observe(document.documentElement,{childList:true,subtree:true,characterData:true});
   schedule();
   window.LampaTrackerRank={
-    version:'1.3.3',
+    version:'1.3.4',
     config:CONFIG,options:OPTIONS,profiles:PROFILES,
     refresh:scan,
     setOption:function(key,value){if(key==='profile'&& !PROFILES[value])return;
@@ -534,5 +534,5 @@
       var st=document.getElementById(STYLE_ID);if(st)st.remove();
     }
   };
-  console.info('[Lampa Tracker Rank v1.3.3] All six features loaded.');
+  console.info('[Lampa Tracker Rank v1.3.4] All six features loaded.');
 })();
