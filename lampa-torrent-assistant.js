@@ -1,4 +1,4 @@
-/* Lampa Torrent Assistant v0.3.1 (experimental)
+/* Lampa Torrent Assistant v0.3.2 (experimental)
  * Prefetch public JacRed-compatible APIs on FULL movie/TV details only.
  * Uses the same score WEIGHTS as Tracker Rank (profile-aware), JSON field extraction.
  * Does not send data anywhere except the configured public parser endpoints.
@@ -6,7 +6,7 @@
  */
 (function(){
   'use strict';
-  var VERSION='0.3.1', PREVIOUS=window.LampaTorrentAssistant;
+  var VERSION='0.3.2', PREVIOUS=window.LampaTorrentAssistant;
   if(PREVIOUS && PREVIOUS.version===VERSION)return;
   if(PREVIOUS && typeof PREVIOUS.disable==='function')try{PREVIOUS.disable();}catch(e){}
   // v0.1 had no disable() method: it registered a legacy listener. Avoid enabling both at once;
@@ -19,7 +19,7 @@
     allowed:/\b(?:rutracker|kinozal|rutor|nnmclub|nnm-club|torrentby|torrent\.by)\b/i,
     redirectPlay:true, maxResults:600
   };
-  var KEY_PREFIX='lta_v031_', CSS_ID='lta-v031-style', activeToken=0, timers=[], listener=null,
+  var KEY_PREFIX='lta_v032_', CSS_ID='lta-v032-style', activeToken=0, timers=[], listener=null,
       currentKey='',currentMovie=null,closed=false,requestController=null,runTimer=null,observer=null;
   var cacheMemory={};
   var DEFAULT_WEIGHTS={quality:30,hdr:10,audio:25,release:10,seeds:20,size:5,tracker:0};
@@ -88,14 +88,13 @@
   }
   function isRelated(r,m){
     if(!inspectYear(r,m))return false;
-    var raw=n(r.Title||r.title),details=r.Details&&typeof r.Details==='object'?r.Details:{};
-    var candidates=[raw,details.name,details.originalName,r.name,r.originalName].filter(Boolean).map(cleanName);
-    var titles=[m.title,m.original].filter(Boolean).map(cleanName);
-    return titles.some(function(t){
-      if(!t||t.length<3)return false;
-      return candidates.some(function(candidate){
-        return candidate===t || candidate.indexOf(t+' ')===0 || candidate.indexOf(t+' 19')>=0 ||
-          candidate.indexOf(t+' 20')>=0 || candidate.indexOf(' '+t+' ')>=0;
+    var d=detailsOf(r),candidates=[r.Title,r.title,d.name,d.originalName,r.name,r.originalName].filter(Boolean).map(cleanName);
+    var originals=[m.title,m.original].filter(Boolean).map(cleanName);
+    return originals.some(function(title){
+      if(title.length<4)return false;
+      return candidates.some(function(c){
+        // Film/series title must start at a logical boundary, not within an unrelated word.
+        return c===title||c.indexOf(title+' ')===0||c.indexOf(' '+title+' ')>=0||c.endsWith(' '+title);
       });
     });
   }
@@ -252,27 +251,38 @@
     return out;
   }
   function runSearch(base,key,m,wide){
-    var calls=[fetchParser(base,key,m)];
-    if(wide && m.serial){
-      var broad=Object.assign({},m,{year:null});
-      // Whole-series packs are often absent from the year-constrained index.
-      calls.push(fetchParser(base,key,broad));
+    var searches=[m],seen={};
+    function add(v){
+      var token=[cleanName(v.original),cleanName(v.title),v.year,v.serial].join('|');
+      if(!seen[token]){seen[token]=true;searches.push(v);}
+    }
+    seen[[cleanName(m.original),cleanName(m.title),m.year,m.serial].join('|')]=true;
+    // JacRed indexers can differ in how they match localized vs original names.
+    if(cleanName(m.title)!==cleanName(m.original)){
+      add(Object.assign({},m,{title:m.original,original:m.original}));
+      add(Object.assign({},m,{title:m.title,original:m.title}));
+    }
+    // Multi-season packs frequently do not have the premiere year as their release year.
+    if(m.serial){
+      add(Object.assign({},m,{year:null}));
       if(cleanName(m.title)!==cleanName(m.original)){
-        calls.push(fetchParser(base,key,Object.assign({},broad,{original:m.title,title:m.title})));
+        add(Object.assign({},m,{title:m.original,original:m.original,year:null}));
+        add(Object.assign({},m,{title:m.title,original:m.title,year:null}));
       }
     }
-    return Promise.allSettled(calls).then(function(items){
-      var success=items.filter(function(x){return x.status==='fulfilled';});
-      if(!success.length)throw items[0].reason||Error('Parser unavailable');
-      return mergeResults(success.map(function(x){return x.value;}));
+    if(!wide)searches=searches.slice(0,2);
+    return Promise.allSettled(searches.map(function(v){return fetchParser(base,key,v);})).then(function(items){
+      var good=items.filter(function(x){return x.status==='fulfilled';});
+      if(!good.length)throw (items[0]&&items[0].reason)||Error('Все запросы отклонены');
+      return mergeResults(good.map(function(x){return x.value;}));
     });
   }
   function ensureStyle(){
     if(document.getElementById(CSS_ID))return;
     var el=document.createElement('style');el.id=CSS_ID;
     el.textContent=
-      '.lta-v03{display:inline-flex;align-items:center;gap:.35em;width:max-content;max-width:100%;'+
-      'white-space:normal;margin:.44em 0 .52em;padding:.28em .58em;border-radius:.35em;'+
+      '.lta-v03{display:flex;align-items:center;justify-content:center;gap:.35em;width:max-content;max-width:95%;'+
+      'white-space:normal;margin:.5em auto .6em!important;padding:.28em .65em;border-radius:.35em;'+
       'border:1px solid #53635b;background:rgba(16,27,24,.79);color:#c4d2cb;'+
       'font-size:.82em;font-weight:650;line-height:1.35;clear:both;vertical-align:middle}'+
       '.lta-v03.good{border-color:#359966;color:#64e5a1}'+
@@ -309,13 +319,33 @@
     var message='',level='';
     if(state.status==='loading')message='⌛ Проверяем торренты…';
     else if(state.status==='found'&&state.best){
-      message='Лучший торрент: '+state.best.score+' · '+state.best.quality+' · '+(state.best.seeds==null?'?':state.best.seeds)+' раздающих';
+      message=(state.confirmed?'Лучший торрент: ':'Поиск · лучший: ')+state.best.score+' · '+state.best.quality+' · '+(state.best.seeds==null?'?':state.best.seeds)+' раздающих';
       level=state.best.score>75?'good':state.best.score>=55?'warn':'bad';
-    }else if(state.status==='empty')message='Подходящие торренты не найдены';
+    }else if(state.status==='empty')message='Поиск не нашёл подходящих (проверь список вручную)';
     else if(state.status==='error')message='⚠ Не удалось проверить раздачи';
     else message='Торренты ещё не проверены';
     badge.text(message).removeClass('good warn bad').addClass(level);
-    badge.attr('title',state.status==='found'&&state.best?state.best.audio+' · '+state.best.tracker+' · '+state.best.sizeGB+' ГБ · '+state.server:'Предварительная проверка через публичные парсеры');
+    badge.attr('title',state.status==='found'&&state.best?state.best.title+' | '+state.best.audio+' · '+state.best.tracker+' · '+state.best.sizeGB+' ГБ · '+state.server:'Предварительная проверка через публичные парсеры');
+  }
+  function captureVisibleRankedResults(){
+    var rank=window.LampaTrackerRank;
+    if(!currentMovie||!rank||typeof rank.inspect!=='function')return;
+    var visible=Array.prototype.slice.call(document.querySelectorAll('.torrent-item')).filter(function(card){
+      return card.getClientRects().length&&!card.classList.contains('ltr-hidden')&&!card.classList.contains('ltr-duplicate');
+    });
+    if(!visible.length)return;
+    var results=[];
+    visible.forEach(function(card){
+      var item=rank.inspect(card);
+      if(!item||!Number.isFinite(item.total)||!isRelated({Title:item.title},currentMovie))return;
+      if(!item.matched||!item.matched.length)return;
+      results.push({score:item.total,title:item.title,quality:item.quality.name,
+        audio:item.audio.name,seeds:item.seeds,sizeGB:item.size,tracker:item.matched.join(', ')});
+    });
+    if(!results.length)return;
+    results.sort(function(a,b){return b.score-a.score;});
+    var d={status:'found',best:results[0],number:results.length,server:'Список Lampa',confirmed:true,at:Date.now()};
+    writeCache(currentMovie,d);
   }
   function bindPlay(root){
     if(!CONFIG.redirectPlay||!root||!root.length)return;
@@ -374,7 +404,7 @@
           if(closed||token!==activeToken)return;
           var merged=bestFrom(mergeResults([data.primary,data.secondary]),movie);
           merged.server=data.secondary.length?'jac.stull.xyz + jac.black':'jac.stull.xyz';
-          if(merged.status==='found')writeCache(movie,merged);
+          if(merged.status==='found'&&!readCache(movie)?.confirmed)writeCache(movie,merged);
           paint(root,movie,merged.status==='empty'&&primaryError&&data.secondary.length===0?{status:'error'}:merged);
         })
         .catch(function(err){
@@ -399,6 +429,12 @@
     if(!window.Lampa||!Lampa.Listener||!Lampa.Activity||!(window.$||window.jQuery))return false;
     ensureStyle();
     listener=onDetails;Lampa.Listener.follow('full',listener);
+    var capturePending=false;
+    observer=new MutationObserver(function(){
+      if(capturePending||!currentMovie)return;
+      capturePending=true;setTimeout(function(){capturePending=false;captureVisibleRankedResults();},350);
+    });
+    observer.observe(document.body||document.documentElement,{childList:true,subtree:true});
     window.LampaTorrentAssistant={version:VERSION,config:CONFIG,disable:disable,
       testSearch:function(movie){var m=parseMovie(movie);return m?runSearch(CONFIG.primary,CONFIG.primaryKey,m,true).then(function(x){return bestFrom(x,m);}):Promise.reject(Error('Нет данных фильма'));},
       rank:scoreJSON,refresh:function(){var root=activeRoot();if(root&&currentMovie){var c=readCache(currentMovie);paint(root,currentMovie,c||{status:'loading'});bindPlay(root);}}
