@@ -1,4 +1,4 @@
-/* Lampa Torrent Assistant v0.2.0 (experimental)
+/* Lampa Torrent Assistant v0.3.0 (experimental)
  * Prefetch public JacRed-compatible APIs on FULL movie/TV details only.
  * Uses the same score WEIGHTS as Tracker Rank (profile-aware), JSON field extraction.
  * Does not send data anywhere except the configured public parser endpoints.
@@ -6,7 +6,7 @@
  */
 (function(){
   'use strict';
-  var VERSION='0.2.0', PREVIOUS=window.LampaTorrentAssistant;
+  var VERSION='0.3.0', PREVIOUS=window.LampaTorrentAssistant;
   if(PREVIOUS && PREVIOUS.version===VERSION)return;
   if(PREVIOUS && typeof PREVIOUS.disable==='function')try{PREVIOUS.disable();}catch(e){}
   // v0.1 had no disable() method: it registered a legacy listener. Avoid enabling both at once;
@@ -17,9 +17,9 @@
     // If your jac.black requires a personal key, set it via Assistant configuration API.
     secondaryKey:'1', timeoutMs:10000, cacheMinutes:30,
     allowed:/\b(?:rutracker|kinozal|rutor|nnmclub|nnm-club|torrentby|torrent\.by)\b/i,
-    redirectPlay:true, maxResults:300
+    redirectPlay:true, maxResults:600
   };
-  var KEY_PREFIX='lta_v02_', CSS_ID='lta-v02-style', activeToken=0, timers=[], listener=null,
+  var KEY_PREFIX='lta_v03_', CSS_ID='lta-v03-style', activeToken=0, timers=[], listener=null,
       currentKey='',currentMovie=null,closed=false,requestController=null,runTimer=null,observer=null;
   var cacheMemory={};
   var DEFAULT_WEIGHTS={quality:30,hdr:10,audio:25,release:10,seeds:20,size:5,tracker:0};
@@ -75,16 +75,15 @@
         return payload.Results.slice(0,CONFIG.maxResults);
       }).finally(function(){clearTimeout(timeout);if(requestController===ctrl)requestController=null;});
   }
-  function isAllowed(r){return CONFIG.allowed.test(n(r.Tracker||r.trackers||r.Source));}
   function inspectYear(r,m){
     // Only reject clearly contradictory dates. Unknown release years are allowed,
     // as tracker titles routinely omit release date or include upload year.
     var year=Number(r.released||r.Released||r.releaseYear||0);
-    if(year&&m.year&&Math.abs(year-m.year)>1)return false;
+    if(year&&m.year&&!m.serial&&Math.abs(year-m.year)>1)return false;
     var title=n(r.Title||r.title);
     // Explicit year inside brackets near movie title is useful; avoid extracting upload dates.
     var fromTitle=title.match(/(?:\(|\[|\/|\s)(19\d{2}|20\d{2})(?:\)|\]|\s|\/)/);
-    if(fromTitle&&m.year&&Math.abs(Number(fromTitle[1])-m.year)>1)return false;
+    if(fromTitle&&m.year&&!m.serial&&Math.abs(Number(fromTitle[1])-m.year)>1)return false;
     return true;
   }
   function isRelated(r,m){
@@ -172,7 +171,49 @@
     var p=r&&r.options&&r.options.profile||'balanced';
     return {name:p, weights:r&&r.profiles&&r.profiles[p]||DEFAULT_WEIGHTS};
   }
+  // Evaluate JSON releases through Tracker Rank's actual scoring function
+  // rather than maintaining two diverging implementations.
+  function trackerRankScore(r){
+    var rank=window.LampaTrackerRank;
+    if(!rank || typeof rank.inspect!=='function')return null;
+    try{
+      var card=document.createElement('div');card.className='torrent-item';
+      card.dataset.tracker=n(r.Tracker||r.trackers||r.Source);
+      var title=document.createElement('div');title.className='torrent-item__title';title.textContent=n(r.Title||r.title);card.appendChild(title);
+      var meta=document.createElement('div');meta.className='torrent-item__audio';
+      var d=detailsOf(r),info='';
+      if(Array.isArray(d.voices))info+=' '+d.voices.join(' ');
+      else if(d.voices)info+=' '+String(d.voices);
+      var f=d.ffprobe||d.mediaInfo||r.MediaInfo;
+      if(f){
+        try{
+          if(typeof f==='string')f=JSON.parse(f);
+          var streams=Array.isArray(f)?f:(f.streams||[]);
+          streams.filter(function(x){return x.codec_type==='audio';}).forEach(function(x){
+            var tags=x.tags||{};
+            info+=' '+n(tags.language)+' '+n(tags.title);
+          });
+        }catch(e){}
+      }
+      meta.textContent=info.slice(0,1200);card.appendChild(meta);
+      var stats=document.createElement('div');stats.className='torrent-item__stats';
+      var gb=(Number(r.Size||0)/1073741824);
+      stats.textContent=' Раздают: '+(r.Seeders==null?'':Number(r.Seeders))+
+        ' Качают: '+(r.Peers==null?'':Number(r.Peers))+
+        ' '+gb.toFixed(2)+' ГБ';
+      card.appendChild(stats);
+      var result=rank.inspect(card);
+      if(result && Number.isFinite(result.total)){
+        return {score:result.total, title:n(r.Title), quality:result.quality.name,
+          audio:result.audio.name,seeds:r.Seeders==null?null:Number(r.Seeders),
+          sizeGB:Math.round(gb*10)/10,tracker:n(r.Tracker),profile:rank.options&&rank.options.profile||'balanced'};
+      }
+    }catch(e){console.warn('[Torrent Assistant] Shared rating unavailable:',e);}
+    return null;
+  }
   function scoreJSON(r){
+    var shared=trackerRankScore(r);
+    if(shared)return shared;
     var size=Number(r.Size||0)/1073741824,quality=getQuality(r),audio=audioPoints(r),profile=getProfile();
     var seeds=r.Seeders===undefined||r.Seeders===null?null:Math.max(0,Number(r.Seeders)||0);
     var raw={quality:quality.points,hdr:hdrPoints(r),audio:audio.points,release:releasePoints(r),seeds:seedPoints(seeds),size:sizePoints(size,quality.name,profile.name),tracker:0};
@@ -182,48 +223,123 @@
     return {score:Math.max(0,Math.min(100,total)),title:n(r.Title),quality:quality.name,audio:audio.name,
       seeds:seeds,sizeGB:Math.round(size*10)/10,tracker:n(r.Tracker),profile:profile.name};
   }
+  function isAllowed(r){
+    var tracker=n(r.Tracker||r.trackers||r.Source);
+    var rank=window.LampaTrackerRank;
+    if(rank&&rank.options&&rank.options.filter===false)return true;
+    if(rank&&rank.options&&rank.options.allowed){
+      var choices=rank.options.allowed;
+      var names={RuTracker:/\\brutracker\\b/i,Kinozal:/\\bkinozal\\b/i,Rutor:/\\brutor\\b/i,NNMClub:/\\b(?:nnmclub|nnm-club)\\b/i,TorrentBy:/\\b(?:torrentby|torrent\\.by)\\b/i};
+      return Object.keys(names).some(function(k){return choices[k]!==false&&names[k].test(tracker);});
+    }
+    return CONFIG.allowed.test(tracker);
+  }
   function bestFrom(results,m){
     var matched=results.filter(function(r){return r&&isAllowed(r)&&isRelated(r,m);});
     var ranked=matched.map(scoreJSON).sort(function(a,b){return b.score-a.score||(b.seeds||0)-(a.seeds||0);});
     return {status:ranked.length?'found':'empty',best:ranked[0]||null,number:ranked.length,server:'',at:Date.now()};
   }
+  function releaseIdentity(r){
+    return n(r.MagnetUri||r.Link||r.Guid||r.Title).slice(0,900);
+  }
+  function mergeResults(groups){
+    var seen=new Set(),out=[];
+    groups.forEach(function(g){g.forEach(function(r){
+      var key=releaseIdentity(r);
+      if(!key||seen.has(key))return;
+      seen.add(key);out.push(r);
+    });});
+    return out;
+  }
+  function runSearch(base,key,m,wide){
+    var calls=[fetchParser(base,key,m)];
+    if(wide && m.serial){
+      var broad=Object.assign({},m,{year:null});
+      // Whole-series packs are often absent from the year-constrained index.
+      calls.push(fetchParser(base,key,broad));
+      if(cleanName(m.title)!==cleanName(m.original)){
+        calls.push(fetchParser(base,key,Object.assign({},broad,{original:m.title,title:m.title})));
+      }
+    }
+    return Promise.allSettled(calls).then(function(items){
+      var success=items.filter(function(x){return x.status==='fulfilled';});
+      if(!success.length)throw items[0].reason||Error('Parser unavailable');
+      return mergeResults(success.map(function(x){return x.value;}));
+    });
+  }
   function ensureStyle(){
     if(document.getElementById(CSS_ID))return;
     var el=document.createElement('style');el.id=CSS_ID;
-    el.textContent='.lta-v02{display:inline-flex;align-items:center;gap:.36em;max-width:100%;white-space:normal;margin:.45em .4em .3em 0;padding:.28em .55em;border-radius:.32em;border:1px solid #53635b;background:rgba(16,27,24,.82);color:#b7c4bd;font-size:.85em;font-weight:600;line-height:1.3}.lta-v02.good{border-color:#359966;color:#64e5a1}.lta-v02.warn{border-color:#b48d36;color:#edc76b}.lta-v02.bad{border-color:#bd5e57;color:#f59b92}.lta-v02 .lta-v02-sub{font-size:.85em;opacity:.85}';
+    el.textContent=
+      '.lta-v03{display:inline-flex;align-items:center;gap:.35em;width:max-content;max-width:100%;'+
+      'white-space:normal;margin:.18em 0 .22em;padding:.25em .52em;border-radius:.35em;'+
+      'border:1px solid #53635b;background:rgba(16,27,24,.79);color:#c4d2cb;'+
+      'font-size:.82em;font-weight:650;line-height:1.35;clear:both}'+
+      '.lta-v03.good{border-color:#359966;color:#64e5a1}'+
+      '.lta-v03.warn{border-color:#b48d36;color:#edc76b}'+
+      '.lta-v03.bad{border-color:#bd5e57;color:#f59b92}'+
+      '.lta-direct-torrent{display:inline-flex!important;align-items:center!important;'+
+      'gap:.42em!important;background:#f4f4f4!important;color:#222!important;'+
+      'border-radius:.6em!important;min-height:2.5em!important;'+
+      'padding:.35em 1.25em!important;margin-right:.35em!important}'+
+      '.lta-direct-torrent span{color:inherit!important}';
     (document.head||document.documentElement).appendChild(el);
   }
   function activeRoot(){try{var a=Lampa.Activity.active();return a&&a.component==='full'&&a.activity&&a.activity.render&&a.activity.render();}catch(e){return null;}}
+  function findDetailsAnchor(root){
+    // Place after the year/country header and BEFORE the movie title.
+    var selectors=['.full-start-new__title','.full-start__title','.full-start__name',
+      '.full-start-new__name','.full-start__head'];
+    for(var i=0;i<selectors.length;i++){
+      var title=root.find(selectors[i]).first();
+      if(title.length)return title;
+    }
+    // Conservative fallback: above action buttons, never inside the buttons row.
+    return root.find('.full-start-new__buttons').first();
+  }
   function paint(root,m,state){
     if(!root||!root.length||!root[0]||!document.body.contains(root[0]))return;
-    var area=root.find('.full-start-new__buttons').first();if(!area.length)return;
-    var badge=area.find('.lta-v02');if(!badge.length){badge=$('<span class="lta-v02"></span>');area.append(badge);}
-    var text='',level='';
-    if(state.status==='loading')text='⏳ Ищем торренты…';
+    var badge=root.find('.lta-v03').first();
+    if(!badge.length){
+      badge=$('<div class="lta-v03"></div>');
+      var anchor=findDetailsAnchor(root);
+      if(anchor.length)anchor.before(badge);
+      else root.prepend(badge);
+    }
+    var message='',level='';
+    if(state.status==='loading')message='⌛ Проверяем торренты…';
     else if(state.status==='found'&&state.best){
-      text='★ Лучший торрент: '+state.best.score+'/100 · '+state.best.quality+' · '+state.best.seeds+' сидов';
-      level=state.best.score>=85?'good':state.best.score>=65?'warn':'bad';
-    }else if(state.status==='empty')text='Торренты по выбранным источникам не найдены';
-    else if(state.status==='error')text='⚠ Не удалось проверить торренты';
-    else text='Торренты ещё не проверены';
-    badge.text(text).removeClass('good warn bad').addClass(level);
-    badge.attr('title',state.status==='found'&&state.best?state.best.audio+' · '+state.best.tracker+' · '+state.best.sizeGB+' ГБ · '+state.server:'Результат предварительной проверки через публичный парсер');
+      message='Лучший торрент: '+state.best.score+' · '+state.best.quality+' · '+(state.best.seeds==null?'?':state.best.seeds)+' раздающих';
+      level=state.best.score>75?'good':state.best.score>=55?'warn':'bad';
+    }else if(state.status==='empty')message='Подходящие торренты не найдены';
+    else if(state.status==='error')message='⚠ Не удалось проверить раздачи';
+    else message='Торренты ещё не проверены';
+    badge.text(message).removeClass('good warn bad').addClass(level);
+    badge.attr('title',state.status==='found'&&state.best?state.best.audio+' · '+state.best.tracker+' · '+state.best.sizeGB+' ГБ · '+state.server:'Предварительная проверка через публичные парсеры');
   }
   function bindPlay(root){
     if(!CONFIG.redirectPlay||!root||!root.length)return;
     var area=root.find('.full-start-new__buttons').first();
+    if(!area.length)return;
     var play=area.find('.button--play').first();
-    var torrent=root.find('.buttons--container > .view--torrent').first();
-    if(!torrent.length)torrent=root.find('.full-start__button.view--torrent').first();
-    if(!play.length||!torrent.length)return;
-    if(!play.data('lta-v02-bound')){
-      play.off('hover:enter.lta click.lta');
-      play.on('hover:enter.lta-v02',function(ev){ev.preventDefault();ev.stopImmediatePropagation();torrent.trigger('hover:enter');});
-      play.on('click.lta-v02',function(ev){ev.preventDefault();ev.stopImmediatePropagation();torrent.trigger('hover:enter');});
-      play.data('lta-v02-bound',true);
-      play.attr('title','Открыть торренты');
-      var span=play.find('span').first();if(span.length)span.text('Смотреть торренты');
-    }
+    var source=root.find('.buttons--container > .full-start__button.view--torrent').first();
+    if(!source.length)source=root.find('.full-start__button.view--torrent').not('.lta-direct-torrent').first();
+    if(!source.length)return;
+    var direct=area.find('.lta-direct-torrent').first();
+    if(!direct.length){
+      // A separate remote-focusable button avoids the original "Select source" listener.
+      direct=source.clone(false,false);
+      direct.removeClass('hide button--play').addClass('selector lta-direct-torrent').removeAttr('id');
+      direct.find('span').first().text('Смотреть торренты');
+      direct.off();
+      direct.on('hover:enter.lta click.lta',function(ev){
+        if(ev){ev.preventDefault();ev.stopImmediatePropagation();}
+        // Invoke the native torrent source directly, bypassing the source chooser.
+        source.trigger('hover:enter',[{}]);
+      });
+      if(play.length){play.before(direct);play.hide().removeClass('selector');}
+      else area.prepend(direct);
+    }else if(play.length)play.hide().removeClass('selector');
   }
   function onDetails(evt){
     if(!evt||evt.type!=='complite'||!evt.object||!evt.object.activity)return;
@@ -237,18 +353,35 @@
     if(runTimer)clearTimeout(runTimer);
     runTimer=setTimeout(function(){
       if(closed||token!==activeToken)return;
-      fetchParser(CONFIG.primary,CONFIG.primaryKey,movie).then(function(res){
-        return {results:res,server:'jac.stull.xyz'};
-      }).catch(function(firstErr){
-        return fetchParser(CONFIG.secondary,CONFIG.secondaryKey,movie).then(function(res){return {results:res,server:'jac.black'};});
-      }).then(function(info){
-        if(closed||token!==activeToken)return;
-        var out=bestFrom(info.results,movie);out.server=info.server;writeCache(movie,out);paint(root,movie,out);
-      }).catch(function(err){
-        if(closed||token!==activeToken)return;
-        paint(root,movie,{status:'error'});
-        console.warn('[Torrent Assistant] Parser test failed:',err&&err.message||err);
-      });
+      var primaryError=null;
+      runSearch(CONFIG.primary,CONFIG.primaryKey,movie,true)
+        .then(function(primaryResults){
+          var p=bestFrom(primaryResults,movie);
+          p.server='jac.stull.xyz';
+          if(!closed&&token===activeToken&&p.status==='found')paint(root,movie,p);
+          return {primary:primaryResults,result:p};
+        })
+        .catch(function(error){
+          primaryError=error;
+          return {primary:[],result:{status:'empty'}};
+        })
+        .then(function(initial){
+          return runSearch(CONFIG.secondary,CONFIG.secondaryKey,movie,initial.result.status!=='found')
+            .then(function(secondaryResults){return {primary:initial.primary,secondary:secondaryResults};})
+            .catch(function(){return {primary:initial.primary,secondary:[]};});
+        })
+        .then(function(data){
+          if(closed||token!==activeToken)return;
+          var merged=bestFrom(mergeResults([data.primary,data.secondary]),movie);
+          merged.server=data.secondary.length?'jac.stull.xyz + jac.black':'jac.stull.xyz';
+          if(merged.status==='found')writeCache(movie,merged);
+          paint(root,movie,merged.status==='empty'&&primaryError&&data.secondary.length===0?{status:'error'}:merged);
+        })
+        .catch(function(err){
+          if(closed||token!==activeToken)return;
+          paint(root,movie,{status:'error'});
+          console.warn('[Torrent Assistant] Search failed:',err&&err.message||err);
+        });
     },400);
   }
   function disable(){
@@ -258,15 +391,16 @@
     timers.forEach(clearTimeout);timers=[];
     if(listener&&Lampa.Listener&&Lampa.Listener.remove)try{Lampa.Listener.remove('full',listener);}catch(e){}
     if(observer)observer.disconnect();
+    $('.button--play').show().addClass('selector');
     var el=document.getElementById(CSS_ID);if(el)el.remove();
-    $('.lta-v02').remove();
+    $('.lta-v03,.lta-direct-torrent').remove();
   }
   function init(){
     if(!window.Lampa||!Lampa.Listener||!Lampa.Activity||!(window.$||window.jQuery))return false;
     ensureStyle();
     listener=onDetails;Lampa.Listener.follow('full',listener);
     window.LampaTorrentAssistant={version:VERSION,config:CONFIG,disable:disable,
-      testSearch:function(movie){var m=parseMovie(movie);return m?fetchParser(CONFIG.primary,CONFIG.primaryKey,m).then(function(x){return bestFrom(x,m);}):Promise.reject(Error('Нет данных фильма'));},
+      testSearch:function(movie){var m=parseMovie(movie);return m?runSearch(CONFIG.primary,CONFIG.primaryKey,m,true).then(function(x){return bestFrom(x,m);}):Promise.reject(Error('Нет данных фильма'));},
       rank:scoreJSON,refresh:function(){var root=activeRoot();if(root&&currentMovie){var c=readCache(currentMovie);paint(root,currentMovie,c||{status:'loading'});bindPlay(root);}}
     };
     console.info('[Lampa Torrent Assistant] '+VERSION+' loaded');return true;
