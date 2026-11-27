@@ -1,11 +1,11 @@
-/* Lampa Tracker Rank v1.3.4 — combined tracker allowlist, scoring, colouring.
+/* Lampa Tracker Rank v1.3.5 — combined tracker allowlist, scoring, colouring.
  * Works on rendered torrent items from public parsers; no parser requests modified.
  * Local-only UI logic. Disable competing Torrent Styles v2 before installing.
  */
 (function () {
   'use strict';
   if (window.LampaTrackerRank) {
-    if (window.LampaTrackerRank.version === '1.3.4') return;
+    if (window.LampaTrackerRank.version === '1.3.5') return;
     try { if (window.LampaTrackerRank.disable) window.LampaTrackerRank.disable(); } catch(e) {}
   }
 
@@ -488,29 +488,37 @@
     hideGroupDuplicates(cards,results);
     if(OPTIONS.sorting)reconcile(cards);
   }
+  var scanTimer=null,settingsTimer=null;
   function schedule(){
     if(disabled||pending||internalMutation)return;
     pending=true;
-    setTimeout(scan,180);
+    scanTimer=setTimeout(function(){scanTimer=null;scan();},250);
+  }
+  function hasTorrentCards(node){
+    return node&&node.nodeType===1&&((node.matches&&node.matches(CONFIG.cardSelector))||(node.querySelector&&node.querySelector(CONFIG.cardSelector)));
   }
   style();
   var settingsReady=registerSettings();
   if(!settingsReady){
     var tries=0;
-    var settingsTimer=setInterval(function(){
+    settingsTimer=setInterval(function(){
       if(disabled||registerSettings()||++tries>=15)clearInterval(settingsTimer);
     },1000);
   }
   observed=new MutationObserver(function(mutations){
-    if(internalMutation)return;
-    // Ignore our own badges and readiness labels to prevent observe/scan loops.
-    if(mutations.every(function(m){return m.target.closest && m.target.closest('.ltr-score,.ltr-ready,.ltr-groups');}))return;
-    schedule();
+    if(disabled||internalMutation)return;
+    // Only react when Lampa actually adds/replaces torrent cards.
+    for(var i=0;i<mutations.length;i++){
+      var added=mutations[i].addedNodes;
+      for(var j=0;j<added.length;j++){
+        if(hasTorrentCards(added[j])){schedule();return;}
+      }
+    }
   });
-  observed.observe(document.documentElement,{childList:true,subtree:true,characterData:true});
+  observed.observe(document.documentElement,{childList:true,subtree:true});
   schedule();
   window.LampaTrackerRank={
-    version:'1.3.4',
+    version:'1.3.5',
     config:CONFIG,options:OPTIONS,profiles:PROFILES,
     refresh:scan,
     setOption:function(key,value){if(key==='profile'&& !PROFILES[value])return;
@@ -521,6 +529,9 @@
     inspect:function(card){return card?score(card):null;},
     disable:function(){
       disabled=true; if(observed)observed.disconnect();
+      if(scanTimer)clearTimeout(scanTimer);
+      if(settingsTimer)clearInterval(settingsTimer);
+      pending=false;
       document.querySelectorAll(CONFIG.cardSelector).forEach(function(card){
         card.classList.remove(HIDE,CARD,'ltr-best','ltr-warn','ltr-duplicate');
         var r=card.querySelector('.ltr-ready');if(r)r.remove();
@@ -534,5 +545,5 @@
       var st=document.getElementById(STYLE_ID);if(st)st.remove();
     }
   };
-  console.info('[Lampa Tracker Rank v1.3.4] All six features loaded.');
+  console.info('[Lampa Tracker Rank v1.3.5] All six features loaded.');
 })();

@@ -1,4 +1,4 @@
-/* Lampa Torrent Assistant v0.3.3 (experimental)
+/* Lampa Torrent Assistant v0.3.4 (experimental)
  * Prefetch public JacRed-compatible APIs on FULL movie/TV details only.
  * Uses the same score WEIGHTS as Tracker Rank (profile-aware), JSON field extraction.
  * Does not send data anywhere except the configured public parser endpoints.
@@ -6,7 +6,7 @@
  */
 (function(){
   'use strict';
-  var VERSION='0.3.3', PREVIOUS=window.LampaTorrentAssistant;
+  var VERSION='0.3.4', PREVIOUS=window.LampaTorrentAssistant;
   if(PREVIOUS && PREVIOUS.version===VERSION)return;
   if(PREVIOUS && typeof PREVIOUS.disable==='function')try{PREVIOUS.disable();}catch(e){}
   // v0.1 had no disable() method: it registered a legacy listener. Avoid enabling both at once;
@@ -19,8 +19,9 @@
     allowed:/\b(?:rutracker|kinozal|rutor|nnmclub|nnm-club|torrentby|torrent\.by)\b/i,
     redirectPlay:true, maxResults:600
   };
-  var KEY_PREFIX='lta_v033_', CSS_ID='lta-v033-style', activeToken=0, timers=[], listener=null,
-      currentKey='',currentMovie=null,closed=false,requestController=null,runTimer=null,observer=null;
+  var KEY_PREFIX='lta_v033_', CSS_ID='lta-v033-style', activeToken=0, listener=null,
+      currentKey='',currentMovie=null,closed=false,runTimer=null,observer=null,captureTimer=null,initTimer=null;
+  var requestControllers=new Set();
   var cacheMemory={};
   var DEFAULT_WEIGHTS={quality:30,hdr:10,audio:25,release:10,seeds:20,size:5,tracker:0};
   var BASE_MAX={quality:30,hdr:10,audio:25,release:10,seeds:20,size:5,tracker:1};
@@ -65,15 +66,20 @@
     apikey:key,Query:m.original||m.title,title:m.title,title_original:m.original,
     year:m.year||'',is_serial:m.serial?'1':'0'
   });}
+  function abortRequests(){
+    requestControllers.forEach(function(ctrl){ctrl.abort();});
+    requestControllers.clear();
+  }
   function fetchParser(base,key,m){
-    var ctrl=new AbortController();requestController=ctrl;
-    var timeout=setTimeout(function(){ctrl.abort();},CONFIG.timeoutMs);timers.push(timeout);
+    if(closed)return Promise.reject(Error('Plugin disabled'));
+    var ctrl=new AbortController();requestControllers.add(ctrl);
+    var timeout=setTimeout(function(){ctrl.abort();},CONFIG.timeoutMs);
     return fetch(parserUrl(base,key,m),{method:'GET',mode:'cors',credentials:'omit',cache:'no-store',signal:ctrl.signal})
       .then(function(r){if(!r.ok)throw Error('HTTP '+r.status);return r.json();})
       .then(function(payload){
         if(!payload||!Array.isArray(payload.Results))throw Error('Нет массива Results');
         return payload.Results.slice(0,CONFIG.maxResults);
-      }).finally(function(){clearTimeout(timeout);if(requestController===ctrl)requestController=null;});
+      }).finally(function(){clearTimeout(timeout);requestControllers.delete(ctrl);});
   }
   function inspectYear(r,m){
     // Only reject clearly contradictory dates. Unknown release years are allowed,
@@ -270,7 +276,8 @@
         add(Object.assign({},m,{title:m.title,original:m.title,year:null}));
       }
     }
-    if(!wide)searches=searches.slice(0,2);
+    // Bound network activity: no more than two queries per parser host.
+    searches=searches.slice(0,2);
     return Promise.allSettled(searches.map(function(v){return fetchParser(base,key,v);})).then(function(items){
       var good=items.filter(function(x){return x.status==='fulfilled';});
       if(!good.length)throw (items[0]&&items[0].reason)||Error('Все запросы отклонены');
@@ -388,11 +395,15 @@
     if(currentKey!==movie.key)lastListSignature='';
     currentMovie=movie;currentKey=movie.key;
     var token=++activeToken,root=evt.object.activity.render();
+    abortRequests(); // Cancel every in-flight lookup for the previous page.
     bindPlay(root);
     var cached=readCache(movie);
     paint(root,movie,cached||{status:'loading'});
     if(runTimer)clearTimeout(runTimer);
+    // Cached results are valid for 30 minutes; avoid refetching on every opening.
+    if(cached)return;
     runTimer=setTimeout(function(){
+      runTimer=null;
       if(closed||token!==activeToken)return;
       var primaryError=null;
       runSearch(CONFIG.primary,CONFIG.primaryKey,movie,true)
@@ -407,7 +418,9 @@
           return {primary:[],result:{status:'empty'}};
         })
         .then(function(initial){
-          return runSearch(CONFIG.secondary,CONFIG.secondaryKey,movie,initial.result.status!=='found')
+          if(closed||token!==activeToken)return {primary:initial.primary,secondary:[]};
+          if(initial.result.status==='found')return {primary:initial.primary,secondary:[]};
+          return runSearch(CONFIG.secondary,CONFIG.secondaryKey,movie,true)
             .then(function(secondaryResults){return {primary:initial.primary,secondary:secondaryResults};})
             .catch(function(){return {primary:initial.primary,secondary:[]};});
         })
@@ -434,8 +447,9 @@
   function disable(){
     closed=true;activeToken++;
     if(runTimer)clearTimeout(runTimer);
-    if(requestController)requestController.abort();
-    timers.forEach(clearTimeout);timers=[];
+    abortRequests();
+    if(captureTimer)clearTimeout(captureTimer);
+    if(initTimer)clearInterval(initTimer);
     if(listener&&Lampa.Listener&&Lampa.Listener.remove)try{Lampa.Listener.remove('full',listener);}catch(e){}
     if(observer)observer.disconnect();
     $('.button--play').show().addClass('selector');
@@ -446,10 +460,16 @@
     if(!window.Lampa||!Lampa.Listener||!Lampa.Activity||!(window.$||window.jQuery))return false;
     ensureStyle();
     listener=onDetails;Lampa.Listener.follow('full',listener);
-    var capturePending=false;
-    observer=new MutationObserver(function(){
-      if(capturePending||!currentMovie)return;
-      capturePending=true;setTimeout(function(){capturePending=false;captureVisibleRankedResults();},350);
+    observer=new MutationObserver(function(mutations){
+      if(closed||!currentMovie||captureTimer)return;
+      // Ignore changes unrelated to newly inserted torrent cards.
+      var relevant=mutations.some(function(m){
+        return Array.prototype.some.call(m.addedNodes,function(node){
+          return node.nodeType===1&&((node.matches&&node.matches('.torrent-item'))||(node.querySelector&&node.querySelector('.torrent-item')));
+        });
+      });
+      if(!relevant)return;
+      captureTimer=setTimeout(function(){captureTimer=null;if(!closed)captureVisibleRankedResults();},350);
     });
     observer.observe(document.body||document.documentElement,{childList:true,subtree:true});
     window.LampaTorrentAssistant={version:VERSION,config:CONFIG,disable:disable,
@@ -459,6 +479,7 @@
     console.info('[Lampa Torrent Assistant] '+VERSION+' loaded');return true;
   }
   if(!init()){
-    var count=0,id=setInterval(function(){if(init()||++count>80)clearInterval(id);},250);
+    var count=0;
+    initTimer=setInterval(function(){if(init()||++count>80){clearInterval(initTimer);initTimer=null;}},250);
   }
 })();
